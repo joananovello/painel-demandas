@@ -57,7 +57,7 @@ const advanceDate = (key, rec) => {
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
 
 const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [] };
-const migTasks = (ts) => (ts || []).map((t) => ({ status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), ...t, subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, ...s })), notes: t.notes || "" }));
+const migTasks = (ts) => (ts || []).map((t) => ({ status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t, subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, ...s })), notes: t.notes || "" }));
 const migClients = (cs) => (cs || []).map((c) => ({ links: [], creds: [], notes: "", ...c }));
 
 function collectUnits(tasks) {
