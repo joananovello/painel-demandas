@@ -1,5 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks } from "lucide-react";
+import { createClient } from "@supabase/supabase-js";
+import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut } from "lucide-react";
+
+const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 
 const KEY = "novello-dashboard-v1";
 
@@ -104,34 +107,84 @@ function buildSchedule(tasks, meetings, workHours) {
 }
 
 export default function App() {
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (!authReady) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando...</div>;
+  if (!session) return <Login />;
+  return <Painel session={session} />;
+}
+
+function Login() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true); setErr("");
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) setErr("E-mail ou senha incorretos.");
+    setBusy(false);
+  };
+  return (
+    <div className="min-h-screen bg-violet-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-6 w-full max-w-sm">
+        <h1 className="text-xl font-bold text-violet-900 mb-1">Painel de Demandas</h1>
+        <p className="text-xs text-violet-500 mb-4">Entre para acessar</p>
+        <label className="block text-sm font-medium mb-1">E-mail</label>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-3" />
+        <label className="block text-sm font-medium mb-1">Senha</label>
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-3" />
+        {err && <p className="text-sm text-red-600 mb-3">{err}</p>}
+        <button onClick={submit} disabled={busy} className="w-full bg-violet-600 text-white rounded-lg py-2 font-medium hover:bg-violet-700 disabled:opacity-60">{busy ? "Entrando..." : "Entrar"}</button>
+      </div>
+    </div>
+  );
+}
+
+function Painel({ session }) {
   const [data, setData] = useState(emptyData);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("hoje");
   const [showSettings, setShowSettings] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const loaded = useRef(false);
+  const saveTimer = useRef(null);
 
-  // Carrega do navegador (localStorage). Na próxima etapa, isso vira Supabase.
+  // Carrega os dados do Supabase (somente os seus, protegidos por login).
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (raw) {
-        const p = JSON.parse(raw);
-        p.tasks = migTasks(p.tasks);
-        p.clients = migClients(p.clients);
-        p.settings = { workHours: 8, stuckDays: 7, ...(p.settings || {}) };
-        setData({ ...emptyData, ...p });
-      }
-    } catch (e) {}
-    loaded.current = true;
-    setLoading(false);
+    (async () => {
+      try {
+        const { data: row } = await supabase.from("painel").select("data").eq("user_id", session.user.id).maybeSingle();
+        if (row && row.data) {
+          const p = row.data;
+          p.tasks = migTasks(p.tasks);
+          p.clients = migClients(p.clients);
+          p.settings = { workHours: 8, stuckDays: 7, ...(p.settings || {}) };
+          setData({ ...emptyData, ...p });
+        }
+      } catch (e) {}
+      loaded.current = true;
+      setLoading(false);
+    })();
   }, []);
 
-  // Salva no navegador a cada mudança.
+  // Salva no Supabase a cada mudança (com um pequeno atraso para não sobrecarregar).
   useEffect(() => {
     if (!loaded.current) return;
-    try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) {}
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      supabase.from("painel").upsert({ user_id: session.user.id, data, updated_at: new Date().toISOString() }).then(() => {});
+    }, 800);
   }, [data]);
+
+  const logout = () => supabase.auth.signOut();
 
   const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours), [data]);
 
@@ -160,7 +213,7 @@ export default function App() {
   const setSetting = (k, v) => setData((d) => ({ ...d, settings: { ...d.settings, [k]: v } }));
   const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) } });
 
-  if (loading) return <div className="flex items-center justify-center h-64 text-violet-600">Carregando seu painel...</div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando seus dados...</div>;
   const sd = data.settings.stuckDays;
   const detailTask = detailId ? data.tasks.find((t) => t.id === detailId) : null;
 
@@ -173,9 +226,10 @@ export default function App() {
             <h1 className="text-xl font-bold text-violet-900">Painel de Demandas</h1>
             <p className="text-xs text-violet-500">Joana • organização semanal e diária</p>
           </div>
-          <button onClick={() => setShowSettings(true)} className="no-print p-2 rounded-lg bg-white border border-violet-200 text-violet-600 hover:bg-violet-100">
-            <Settings size={18} />
-          </button>
+          <div className="no-print flex gap-2">
+            <button onClick={() => setShowSettings(true)} className="p-2 rounded-lg bg-white border border-violet-200 text-violet-600 hover:bg-violet-100"><Settings size={18} /></button>
+            <button onClick={logout} title="Sair" className="p-2 rounded-lg bg-white border border-violet-200 text-violet-600 hover:bg-violet-100"><LogOut size={18} /></button>
+          </div>
         </header>
 
         <nav className="no-print flex gap-1 overflow-x-auto pb-2 mb-4">
