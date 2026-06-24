@@ -58,7 +58,13 @@ const advanceDate = (key, rec) => {
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
 
 const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [] };
-const migTasks = (ts) => (ts || []).map((t) => ({ status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t, subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, ...s })), notes: t.notes || "", doneDate: t.doneDate || (t.done ? (localDay(t.completedAt) || TODAY) : null) }));
+const migTasks = (ts) => (ts || []).map((t) => ({
+  status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t,
+  subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, ...s })),
+  notes: t.notes || "",
+  doneDate: t.doneDate || (t.done ? (localDay(t.completedAt) || TODAY) : null),
+  workDate: t.workDate || null,
+}));
 const migClients = (cs) => (cs || []).map((c) => ({ links: [], creds: [], notes: "", ...c }));
 
 function collectUnits(tasks) {
@@ -85,7 +91,7 @@ function buildSchedule(tasks, meetings, workHours) {
   const perUnitToday = {};
   const perDayHours = {};
 
-  // 1) Itens com dia planejado manualmente (arrastados): ficam inteiros naquele dia.
+  // 1) Itens com dia planejado manualmente: ficam inteiros naquele dia
   const manual = units.filter((u) => u.workDate);
   for (const u of manual) {
     const day = u.workDate < TODAY ? TODAY : u.workDate;
@@ -93,7 +99,7 @@ function buildSchedule(tasks, meetings, workHours) {
     if (day === TODAY) perUnitToday[u.id] = (perUnitToday[u.id] || 0) + u.estTime;
   }
 
-  // 2) Itens sem dia planejado: distribuídos automaticamente, respeitando o que já foi planejado.
+  // 2) Itens sem dia planejado: distribuídos automaticamente
   const auto = units.filter((u) => !u.workDate && u.deadline && u.estTime > 0);
   if (auto.length) {
     const maxKey = auto.reduce((mx, u) => (u.deadline > mx ? u.deadline : mx), TODAY);
@@ -199,7 +205,7 @@ function Painel({ session }) {
 
   const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours), [data]);
 
-  const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), ...t }] }));
+  const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, ...t }] }));
   const editTask = (id, patch) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
   const editSubtask = (taskId, subId, patch) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === taskId ? { ...t, subtasks: (t.subtasks || []).map((s) => (s.id === subId ? { ...s, ...patch } : s)) } : t)) }));
   const toggleTask = (id) => setData((d) => {
@@ -267,7 +273,9 @@ function Painel({ session }) {
         )}
       </div>
 
-      {detailTask && <TaskDetail task={detailTask} data={data} onEdit={editTask} onDelete={(id) => { delTask(id); setDetailId(null); }} onClose={() => setDetailId(null)} />}
+      {detailTask && (
+        <TaskDetail task={detailTask} data={data} onEdit={editTask} onDelete={(id) => { delTask(id); setDetailId(null); }} onClose={() => setDetailId(null)} />
+      )}
 
       {showSettings && (
         <Modal onClose={() => setShowSettings(false)} title="Configurações">
@@ -302,15 +310,21 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
   const latePlan = t.workDate && t.deadline && t.workDate > t.deadline;
   const prog = subProgress(t);
   return (
-    <div draggable={draggable || undefined} onDragStart={onDragStart} className={`bg-white rounded-lg border border-slate-200 border-l-4 ${u.lb} p-2 mb-2 ${draggable ? "cursor-move" : ""}`}>
+    <div
+      draggable={draggable || undefined}
+      onDragStart={onDragStart}
+      className={`bg-white rounded-lg border border-slate-200 border-l-4 ${u.lb} p-2 mb-2 ${draggable ? "cursor-move" : ""}`}
+    >
       <div className="flex items-start gap-1.5">
+        {draggable && <GripVertical size={12} className="text-slate-300 mt-0.5 shrink-0" />}
         {onToggle && (
           <button onClick={() => onToggle(t.id)} className={`shrink-0 w-4 h-4 mt-0.5 rounded border flex items-center justify-center ${t.done ? "bg-violet-600 border-violet-600 text-white" : "border-slate-300"}`}>
             {t.done && <Check size={11} />}
           </button>
         )}
-        {draggable && <GripVertical size={12} className="text-slate-300 mt-0.5 shrink-0" />}
-        <p onClick={() => onOpen && onOpen(t.id)} className={`text-sm flex-1 leading-snug cursor-pointer hover:text-violet-700 ${t.done ? "line-through text-slate-400" : ""}`}>{recurring && <Repeat size={11} className="inline text-violet-400 mr-0.5" />}{t.title}</p>
+        <p onClick={() => onOpen && onOpen(t.id)} className={`text-sm flex-1 leading-snug cursor-pointer hover:text-violet-700 ${t.done ? "line-through text-slate-400" : ""}`}>
+          {recurring && <Repeat size={11} className="inline text-violet-400 mr-0.5" />}{t.title}
+        </p>
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1">
         <span className="text-xs text-slate-400">{tag}</span>
@@ -318,7 +332,7 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
         {t.deadline && <span className={`text-xs ${overdue ? "text-red-600 font-medium" : "text-slate-400"}`}>{overdue ? "vencida " : "entrega "}{fmtBR(t.deadline)}</span>}
         {prog && <span className="text-xs text-violet-500 flex items-center gap-0.5"><ListChecks size={10} />{prog}</span>}
         {(t.notes || "").trim() && <StickyNote size={10} className="text-slate-300" />}
-        {latePlan && <span className="text-xs text-red-500">após o prazo</span>}
+        {latePlan && <span className="text-xs text-red-500">planejado após prazo</span>}
         {stuck && <span className="text-xs px-1 rounded bg-orange-100 text-orange-700 flex items-center gap-0.5"><AlertTriangle size={9} />{daysSince(t.statusSince)}d</span>}
       </div>
       {t.done && onSetDoneDate && (
@@ -345,12 +359,16 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
   const overdue = !sub.done && sub.deadline && sub.deadline < TODAY;
   const latePlan = sub.workDate && sub.deadline && sub.workDate > sub.deadline;
   return (
-    <div draggable={draggable || undefined} onDragStart={onDragStart} className={`bg-white rounded-lg border border-slate-200 border-l-4 ${u.lb} p-2 mb-2 ${draggable ? "cursor-move" : ""}`}>
+    <div
+      draggable={draggable || undefined}
+      onDragStart={onDragStart}
+      className={`bg-white rounded-lg border border-slate-200 border-l-4 ${u.lb} p-2 mb-2 ${draggable ? "cursor-move" : ""}`}
+    >
       <div className="flex items-start gap-1.5">
+        {draggable && <GripVertical size={12} className="text-slate-300 mt-0.5 shrink-0" />}
         <button onClick={() => onToggleSub(task.id, sub.id)} className={`shrink-0 w-4 h-4 mt-0.5 rounded border flex items-center justify-center ${sub.done ? "bg-violet-600 border-violet-600 text-white" : "border-slate-300"}`}>
           {sub.done && <Check size={11} />}
         </button>
-        {draggable && <GripVertical size={12} className="text-slate-300 mt-0.5 shrink-0" />}
         <div className="flex-1 min-w-0">
           <p onClick={() => onOpen && onOpen(task.id)} className={`text-sm leading-snug cursor-pointer hover:text-violet-700 ${sub.done ? "line-through text-slate-400" : ""}`}>{sub.title}</p>
           <p className="text-xs text-slate-400 truncate">{tag} • {task.title}</p>
@@ -360,7 +378,7 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
         {todayHours > 0 && <span className="font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
         {sub.deadline && <span className={overdue ? "text-red-600 font-medium" : "text-slate-400"}>{overdue ? "vencida " : "entrega "}{fmtBR(sub.deadline)}</span>}
         {sub.estTime > 0 && <span className="text-slate-300">{sub.estTime}h</span>}
-        {latePlan && <span className="text-red-500">após o prazo</span>}
+        {latePlan && <span className="text-red-500">planejado após prazo</span>}
         <span className="text-violet-400 flex items-center gap-0.5"><ListChecks size={10} />subtarefa</span>
       </div>
       {sub.done && onSetSubDoneDate && (
@@ -375,15 +393,175 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
 
 function KColumn({ title, count, accent, today, hours, over, onDragOver, onDrop, children }) {
   return (
-    <div className={`w-60 shrink-0 rounded-xl p-2 ${today ? "bg-violet-50 ring-2 ring-violet-300" : "bg-slate-100"}`} onDragOver={onDragOver} onDrop={onDrop}>
+    <div
+      className={`w-60 shrink-0 rounded-xl p-2 ${today ? "bg-violet-50 ring-2 ring-violet-300" : "bg-slate-100"}`}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <div className="flex items-center justify-between mb-2 px-1">
         <span className={`text-xs font-bold uppercase tracking-wide ${accent || "text-slate-600"}`}>{title}</span>
         <span className="text-xs flex items-center gap-1.5">
-          {hours != null && hours > 0 && <span className={over ? "text-red-600 font-semibold" : "text-slate-400"}>{hours.toFixed(1)}h</span>}
+          {hours != null && hours > 0 && (
+            <span className={over ? "text-red-600 font-semibold" : "text-slate-400"}>{hours.toFixed(1)}h</span>
+          )}
           <span className="text-slate-400">{count}</span>
         </span>
       </div>
       {children}
+    </div>
+  );
+}
+
+function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen }) {
+  const wh = data.settings.workHours;
+  const sd = data.settings.stuckDays;
+  const tasks = data.tasks;
+  const meetHours = sched.meetingHours[TODAY] || 0;
+  const setDoneDate = (id, v) => editTask(id, { doneDate: v });
+  const setSubDoneDate = (tid, sid, v) => editSubtask(tid, sid, { doneDate: v });
+  const capForDay = (k) => Math.max(0, wh - (sched.meetingHours[k] || 0));
+
+  const dragRef = useRef(null);
+  const startDrag = (e, kind, taskId, subId) => {
+    dragRef.current = { kind, taskId, subId };
+    try { e.dataTransfer.setData("text/plain", "drag"); e.dataTransfer.effectAllowed = "move"; } catch (_) {}
+  };
+  const dropDay = (dayKey) => {
+    const it = dragRef.current;
+    dragRef.current = null;
+    if (!it) return;
+    if (it.kind === "task") editTask(it.taskId, { workDate: dayKey });
+    else editSubtask(it.taskId, it.subId, { workDate: dayKey });
+  };
+
+  const findSub = (taskId, subId) => { const t = tasks.find((x) => x.id === taskId); return { task: t, sub: t ? (t.subtasks || []).find((s) => s.id === subId) : null }; };
+
+  const todoUnits = sched.units
+    .filter((un) => (sched.perUnitToday[un.id] || 0) > 0 || (un.deadline && un.deadline <= TODAY) || (un.workDate && un.workDate <= TODAY))
+    .map((un) => { const r = findSub(un.taskId, un.subId); return { ...un, task: r.task, sub: r.sub, hoje: sched.perUnitToday[un.id] || 0 }; })
+    .filter((un) => un.task)
+    .sort((a, b) => {
+      const da = a.deadline || "9"; const db = b.deadline || "9";
+      const ov = (da < TODAY ? 0 : 1) - (db < TODAY ? 0 : 1);
+      if (ov !== 0) return ov;
+      return URG[b.urgency].rank - URG[a.urgency].rank || da.localeCompare(db);
+    });
+
+  const esperaT = tasks.filter((t) => !t.done && t.status === "espera" && t.deadline && t.deadline <= TODAY);
+
+  const feitoTasks = tasks.filter((t) => t.done && t.doneDate === TODAY).map((t) => ({ kind: "task", t }));
+  const feitoSubs = tasks.flatMap((t) => (t.subtasks || []).filter((s) => s.done && s.doneDate === TODAY).map((s) => ({ kind: "sub", task: t, sub: s })));
+  const feito = [...feitoTasks, ...feitoSubs];
+
+  const committed = (sched.perDayHours[TODAY] || 0) + meetHours;
+  const pct = Math.min(100, Math.round((committed / wh) * 100));
+  const over = committed > wh + 0.01;
+
+  const ws = today0();
+  ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7));
+  const labels = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+
+  const dayOf = (x) => x.workDate || x.deadline;
+
+  const week = labels.map((lb, i) => {
+    const d = new Date(ws); d.setDate(ws.getDate() + i);
+    const key = toKey(d);
+    return {
+      key, label: lb, num: d.getDate(),
+      tasks: tasks.filter((t) => !t.done && dayOf(t) === key).sort((a, b) => URG[b.urgency].rank - URG[a.urgency].rank),
+      subs: tasks.flatMap((t) => (t.subtasks || []).filter((s) => !s.done && dayOf(s) === key).map((s) => ({ task: t, sub: s }))),
+      meetings: data.meetings.filter((m) => m.date === key).sort((a, b) => (a.start || "").localeCompare(b.start || "")),
+    };
+  });
+
+  const dataExt = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
+
+  return (
+    <div className="space-y-5">
+      <p className="text-sm text-violet-700 capitalize font-medium">{dataExt}</p>
+
+      <Dashboard data={data} />
+
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-semibold text-slate-700">Carga do dia</span>
+          <span className={`text-sm font-bold ${over ? "text-red-600" : "text-violet-700"}`}>{committed.toFixed(1)}h / {wh}h</span>
+        </div>
+        <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full ${over ? "bg-red-500" : "bg-violet-500"}`} style={{ width: `${pct}%` }} />
+        </div>
+        {over && <p className="text-xs text-red-600 mt-2 flex items-center gap-1"><AlertTriangle size={13} /> Dia sobrecarregado. Considere renegociar um prazo ou delegar.</p>}
+      </div>
+
+      <div>
+        <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5"><CalendarClock size={15} className="text-violet-500" /> Hoje</h2>
+        <div className="flex gap-3 overflow-x-auto pb-2">
+          <KColumn title="A fazer" count={todoUnits.length} accent="text-violet-700" today>
+            {todoUnits.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada travado para hoje.</p> :
+              todoUnits.map((un) => un.sub
+                ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} />
+                : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} />)}
+          </KColumn>
+          <KColumn title="Em espera" count={esperaT.length} accent="text-slate-500">
+            {esperaT.length === 0 ? <p className="text-xs text-slate-400 px-1">Vazio.</p> :
+              esperaT.map((t) => <Card key={t.id} t={t} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} />)}
+          </KColumn>
+          <KColumn title="Feito hoje" count={feito.length} accent="text-green-600">
+            {feito.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada concluído ainda.</p> :
+              feito.map((it) => it.kind === "task"
+                ? <Card key={it.t.id} t={it.t} data={data} onToggle={toggleTask} onOpen={onOpen} onSetDoneDate={setDoneDate} stuckDays={sd} />
+                : <SubtaskCard key={it.sub.id} task={it.task} sub={it.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} onSetSubDoneDate={setSubDoneDate} />)}
+          </KColumn>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
+          <Calendar size={15} className="text-violet-500" /> Semana
+          <span className="text-xs font-normal text-slate-400">(arraste para o dia que vai fazer)</span>
+        </h2>
+        <div className="flex gap-3 overflow-x-auto pb-2">
+          {week.map((d) => {
+            const dh = sched.perDayHours[d.key] || 0;
+            const cp = capForDay(d.key);
+            return (
+              <KColumn
+                key={d.key}
+                title={`${d.label} ${d.num}`}
+                count={d.tasks.length + d.subs.length + d.meetings.length}
+                today={d.key === TODAY}
+                hours={dh}
+                over={dh > cp + 0.01}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); dropDay(d.key); }}
+              >
+                {d.meetings.map((m) => <MeetingCard key={m.id} m={m} />)}
+                {d.subs.map(({ task, sub }) => (
+                  <SubtaskCard
+                    key={sub.id} task={task} sub={sub} data={data}
+                    onToggleSub={toggleSubtask} onOpen={onOpen}
+                    draggable
+                    onDragStart={(e) => startDrag(e, "sub", task.id, sub.id)}
+                    todayHours={d.key === TODAY ? (sched.perUnitToday[`${task.id}::${sub.id}`] || 0) : 0}
+                  />
+                ))}
+                {d.tasks.map((t) => (
+                  <Card
+                    key={t.id} t={t} data={data}
+                    onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen}
+                    draggable
+                    onDragStart={(e) => startDrag(e, "task", t.id, null)}
+                    stuckDays={sd}
+                  />
+                ))}
+                {d.tasks.length === 0 && d.subs.length === 0 && d.meetings.length === 0 && (
+                  <p className="text-xs text-slate-300 px-1">solte aqui</p>
+                )}
+              </KColumn>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -434,114 +612,6 @@ function Dashboard({ data }) {
             <p className="text-xs mt-1 leading-tight">{b.label}</p>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen }) {
-  const wh = data.settings.workHours;
-  const sd = data.settings.stuckDays;
-  const tasks = data.tasks;
-  const meetHours = sched.meetingHours[TODAY] || 0;
-  const setDoneDate = (id, v) => editTask(id, { doneDate: v });
-  const setSubDoneDate = (tid, sid, v) => editSubtask(tid, sid, { doneDate: v });
-  const capForDay = (k) => Math.max(0, wh - (sched.meetingHours[k] || 0));
-
-  const dragRef = useRef(null);
-  const startDrag = (e, kind, taskId, subId) => { dragRef.current = { kind, taskId, subId }; try { e.dataTransfer.setData("text/plain", "drag"); e.dataTransfer.effectAllowed = "move"; } catch (_) {} };
-  const dropDay = (dayKey) => { const it = dragRef.current; dragRef.current = null; if (!it) return; if (it.kind === "task") editTask(it.taskId, { workDate: dayKey }); else editSubtask(it.taskId, it.subId, { workDate: dayKey }); };
-
-  const findSub = (taskId, subId) => { const t = tasks.find((x) => x.id === taskId); return { task: t, sub: t ? (t.subtasks || []).find((s) => s.id === subId) : null }; };
-
-  const todoUnits = sched.units
-    .filter((un) => (sched.perUnitToday[un.id] || 0) > 0 || (un.deadline && un.deadline <= TODAY) || (un.workDate && un.workDate <= TODAY))
-    .map((un) => { const r = findSub(un.taskId, un.subId); return { ...un, task: r.task, sub: r.sub, hoje: sched.perUnitToday[un.id] || 0 }; })
-    .filter((un) => un.task)
-    .sort((a, b) => { const da = a.deadline || "9"; const db = b.deadline || "9"; const ov = (da < TODAY ? 0 : 1) - (db < TODAY ? 0 : 1); if (ov !== 0) return ov; return URG[b.urgency].rank - URG[a.urgency].rank || da.localeCompare(db); });
-
-  const esperaT = tasks.filter((t) => !t.done && t.status === "espera" && t.deadline && t.deadline <= TODAY);
-
-  const feitoTasks = tasks.filter((t) => t.done && t.doneDate === TODAY).map((t) => ({ kind: "task", t }));
-  const feitoSubs = tasks.flatMap((t) => (t.subtasks || []).filter((s) => s.done && s.doneDate === TODAY).map((s) => ({ kind: "sub", task: t, sub: s })));
-  const feito = [...feitoTasks, ...feitoSubs];
-
-  const committed = (sched.perDayHours[TODAY] || 0) + meetHours;
-  const pct = Math.min(100, Math.round((committed / wh) * 100));
-  const over = committed > wh + 0.01;
-
-  const ws = today0();
-  ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7));
-  const labels = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
-  const dayOf = (x) => x.workDate || x.deadline;
-  const week = labels.map((lb, i) => {
-    const d = new Date(ws); d.setDate(ws.getDate() + i);
-    const key = toKey(d);
-    return {
-      key, label: lb, num: d.getDate(),
-      tasks: tasks.filter((t) => dayOf(t) === key).sort((a, b) => Number(a.done) - Number(b.done) || URG[b.urgency].rank - URG[a.urgency].rank),
-      subs: tasks.flatMap((t) => (t.subtasks || []).filter((s) => dayOf(s) === key).map((s) => ({ task: t, sub: s }))).sort((a, b) => Number(a.sub.done) - Number(b.sub.done)),
-      meetings: data.meetings.filter((m) => m.date === key).sort((a, b) => (a.start || "").localeCompare(b.start || "")),
-    };
-  });
-
-  const dataExt = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
-
-  return (
-    <div className="space-y-5">
-      <p className="text-sm text-violet-700 capitalize font-medium">{dataExt}</p>
-
-      <Dashboard data={data} />
-
-      <div className="bg-white rounded-xl border border-slate-200 p-4">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-sm font-semibold text-slate-700">Carga do dia</span>
-          <span className={`text-sm font-bold ${over ? "text-red-600" : "text-violet-700"}`}>{committed.toFixed(1)}h / {wh}h</span>
-        </div>
-        <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
-          <div className={`h-full rounded-full ${over ? "bg-red-500" : "bg-violet-500"}`} style={{ width: `${pct}%` }} />
-        </div>
-        {over && <p className="text-xs text-red-600 mt-2 flex items-center gap-1"><AlertTriangle size={13} /> Dia sobrecarregado. Considere renegociar um prazo ou delegar.</p>}
-      </div>
-
-      <div>
-        <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5"><CalendarClock size={15} className="text-violet-500" /> Hoje</h2>
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          <KColumn title="A fazer" count={todoUnits.length} accent="text-violet-700" today>
-            {todoUnits.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada travado para hoje.</p> :
-              todoUnits.map((un) => un.sub
-                ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} />
-                : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} />)}
-          </KColumn>
-          <KColumn title="Em espera" count={esperaT.length} accent="text-slate-500">
-            {esperaT.length === 0 ? <p className="text-xs text-slate-400 px-1">Vazio.</p> :
-              esperaT.map((t) => <Card key={t.id} t={t} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} />)}
-          </KColumn>
-          <KColumn title="Feito hoje" count={feito.length} accent="text-green-600">
-            {feito.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada concluído ainda.</p> :
-              feito.map((it) => it.kind === "task"
-                ? <Card key={it.t.id} t={it.t} data={data} onToggle={toggleTask} onOpen={onOpen} onSetDoneDate={setDoneDate} stuckDays={sd} />
-                : <SubtaskCard key={it.sub.id} task={it.task} sub={it.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} onSetSubDoneDate={setSubDoneDate} />)}
-          </KColumn>
-        </div>
-      </div>
-
-      <div>
-        <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5"><Calendar size={15} className="text-violet-500" /> Semana <span className="text-xs font-normal text-slate-400">(arraste para o dia que vai fazer)</span></h2>
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {week.map((d) => {
-            const dh = sched.perDayHours[d.key] || 0;
-            const cp = capForDay(d.key);
-            return (
-              <KColumn key={d.key} title={`${d.label} ${d.num}`} count={d.tasks.length + d.subs.length + d.meetings.length} today={d.key === TODAY} hours={dh} over={dh > cp + 0.01} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); dropDay(d.key); }}>
-                {d.meetings.map((m) => <MeetingCard key={m.id} m={m} />)}
-                {d.subs.map(({ task, sub }) => <SubtaskCard key={sub.id} task={task} sub={sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} draggable onDragStart={(e) => startDrag(e, "sub", task.id, sub.id)} todayHours={d.key === TODAY ? (sched.perUnitToday[`${task.id}::${sub.id}`] || 0) : 0} />)}
-                {d.tasks.map((t) => <Card key={t.id} t={t} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} draggable onDragStart={(e) => startDrag(e, "task", t.id)} stuckDays={sd} />)}
-                {d.tasks.length === 0 && d.subs.length === 0 && d.meetings.length === 0 && <p className="text-xs text-slate-300 px-1">solte aqui</p>}
-              </KColumn>
-            );
-          })}
-        </div>
       </div>
     </div>
   );
@@ -703,7 +773,7 @@ function TaskDetail({ task, data, onEdit, onDelete, onClose }) {
   const setSubs = (arr) => onEdit(t.id, { subtasks: arr });
   const addSub = () => {
     if (!stitle.trim()) return;
-    setSubs([...subs, { id: uid(), title: stitle.trim(), deadline: sdate || null, estTime: Number(stime) || 0, week: isMonthly ? Number(sweek) : null, done: false }]);
+    setSubs([...subs, { id: uid(), title: stitle.trim(), deadline: sdate || null, estTime: Number(stime) || 0, week: isMonthly ? Number(sweek) : null, done: false, workDate: null }]);
     setStitle(""); setSdate(""); setStime("");
   };
   const upSub = (id, patch) => setSubs(subs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
@@ -1061,4 +1131,160 @@ function Relatorio({ data, onRestore }) {
   const meetings = data.meetings.filter((m) => (m.date || "").slice(0, 7) === ym).sort((a, b) => a.date.localeCompare(b.date));
 
   const groups = [];
-  [...data.clients].sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" })).forEach((c) => { const list = mt.filter((t) => t.area === "cliente" && t.clientId === c.id); if (list.length) groups
+  [...data.clients].sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" })).forEach((c) => {
+    const list = mt.filter((t) => t.area === "cliente" && t.clientId === c.id);
+    if (list.length) groups.push({ name: c.name, list });
+  });
+  ["acohub", "novello", "pessoal", "freela"].forEach((a) => {
+    const list = mt.filter((t) => t.area === a);
+    if (list.length) groups.push({ name: AREAS[a].label, list });
+  });
+
+  const RepRow = (t) => (
+    <div key={t.id} className="py-1 text-sm border-b border-slate-100 last:border-0">
+      <div className="flex items-start gap-2">
+        <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${URG[t.urgency].dot}`} />
+        <span className="flex-1">{t.title}{t.recurrence !== "none" && <span className="text-xs text-violet-400"> ({REC[t.recurrence]})</span>}{subProgress(t) && <span className="text-xs text-violet-400"> [{subProgress(t)}]</span>}</span>
+        <span className="text-xs text-slate-400 whitespace-nowrap w-10 text-right">{t.estTime ? `${t.estTime}h` : ""}</span>
+        <span className="text-xs text-slate-400 whitespace-nowrap w-16 text-right">{t.deadline ? fmtBR(t.deadline) : "sem prazo"}</span>
+      </div>
+      {(t.subtasks || []).length > 0 && (
+        <div className="pl-4 mt-0.5">
+          {(t.subtasks || []).map((s) => (
+            <div key={s.id} className="text-xs text-slate-500 flex items-center gap-1">
+              {s.done ? <Check size={10} className="text-green-600" /> : <span className="w-2.5" />}
+              <span className={s.done ? "line-through" : ""}>{s.title}</span>
+              {s.deadline && <span className="text-slate-300">{fmtBR(s.deadline)}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="no-print flex flex-wrap items-end gap-2">
+        <div className="flex flex-col">
+          <label className="text-xs text-slate-500 mb-0.5">Mês do relatório</label>
+          <input type="month" value={ym} onChange={(e) => setYm(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        <button onClick={() => { try { window.print(); } catch (e) {} }} className="flex items-center gap-1 bg-violet-600 text-white rounded-lg px-3 py-2 text-sm font-medium hover:bg-violet-700">
+          <Printer size={15} /> Imprimir / Salvar PDF
+        </button>
+      </div>
+
+      <Section title={`Relatório de ${monthLabel}`} icon={FileText}>
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <Stat label="Total de demandas" value={mt.length} />
+          <Stat label="Concluídas" value={done.length} />
+          <Stat label="Ativas" value={ativa.length} />
+          <Stat label="Em espera" value={espera.length} />
+          <Stat label="Horas estimadas" value={`${horasTotal.toFixed(1)}h`} />
+          <Stat label="Horas concluídas" value={`${horasDone.toFixed(1)}h`} />
+        </div>
+      </Section>
+
+      {groups.length === 0 ? (
+        <Section title="Demandas" icon={CircleDot}><p className="text-sm text-slate-400">Nenhuma demanda registrada neste mês.</p></Section>
+      ) : groups.map((g) => {
+        const pend = g.list.filter((t) => !t.done);
+        const conc = g.list.filter((t) => t.done);
+        return (
+          <Section key={g.name} title={g.name} icon={CircleDot}>
+            {pend.length > 0 && <div className="mb-3"><p className="text-xs font-semibold text-violet-600 uppercase tracking-wide mb-1">Pendentes ({pend.length})</p>{pend.map(RepRow)}</div>}
+            {conc.length > 0 && <div><p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Concluídas ({conc.length})</p>{conc.map(RepRow)}</div>}
+          </Section>
+        );
+      })}
+
+      {meetings.length > 0 && (
+        <Section title="Reuniões do mês" icon={Calendar}>
+          {meetings.map((m) => (
+            <div key={m.id} className="flex items-center gap-3 py-1 text-sm border-b border-slate-100 last:border-0">
+              <span className="text-xs font-semibold text-violet-700 w-12">{fmtBR(m.date)}</span>
+              <span className="text-xs font-mono text-slate-500 w-12">{m.start}</span>
+              <span className="flex-1">{m.title}</span>
+            </div>
+          ))}
+        </Section>
+      )}
+
+      <BackupBox data={data} onRestore={onRestore} />
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="bg-violet-50 rounded-lg px-3 py-2">
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="text-lg font-bold text-violet-800">{value}</p>
+    </div>
+  );
+}
+
+function BackupBox({ data, onRestore }) {
+  const [open, setOpen] = useState(false);
+  const [imp, setImp] = useState("");
+  const [msg, setMsg] = useState("");
+  const json = JSON.stringify(data, null, 2);
+
+  const copy = async () => { try { await navigator.clipboard.writeText(json); setMsg("Backup copiado. Cole num arquivo seguro."); } catch (e) { setMsg("Selecione o texto abaixo e copie manualmente."); } };
+  const download = () => {
+    try {
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `painel-backup-${TODAY}.json`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      setMsg("Download iniciado.");
+    } catch (e) { setMsg("Download bloqueado aqui. Use Copiar."); }
+  };
+  const restore = () => {
+    try {
+      const p = JSON.parse(imp);
+      if (!p || !Array.isArray(p.tasks)) throw new Error("formato");
+      onRestore(p); setMsg("Dados restaurados com sucesso.");
+    } catch (e) { setMsg("JSON inválido. Confira o texto colado."); }
+  };
+
+  return (
+    <div className="no-print bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5"><Download size={15} className="text-violet-500" /> Backup completo dos dados</h2>
+        <button onClick={() => setOpen(!open)} className="text-violet-600 text-sm">{open ? "Fechar" : "Abrir"}</button>
+      </div>
+      {open && (
+        <div className="mt-3 space-y-3">
+          <p className="text-xs text-slate-500">Backup de tudo (clientes, demandas, subtarefas, reuniões, links e acessos). Guarde num arquivo seguro. Para restaurar, cole o conteúdo no campo de baixo.</p>
+          <div className="flex gap-2">
+            <button onClick={copy} className="flex items-center gap-1 bg-violet-600 text-white rounded-lg px-3 py-2 text-sm"><Copy size={14} /> Copiar</button>
+            <button onClick={download} className="flex items-center gap-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm"><Download size={14} /> Baixar .json</button>
+          </div>
+          <textarea readOnly value={json} className="w-full h-24 border border-slate-200 rounded-lg p-2 text-xs font-mono text-slate-500 bg-slate-50" />
+          <div>
+            <p className="text-xs font-semibold text-slate-600 mb-1">Restaurar de um backup</p>
+            <textarea value={imp} onChange={(e) => setImp(e.target.value)} placeholder="Cole aqui o conteúdo de um backup salvo" className="w-full h-20 border border-slate-300 rounded-lg p-2 text-xs font-mono" />
+            <button onClick={restore} className="mt-1 bg-orange-600 text-white rounded-lg px-3 py-2 text-sm">Restaurar (substitui os dados atuais)</button>
+          </div>
+          {msg && <p className="text-xs text-violet-600">{msg}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Modal({ title, children, onClose }) {
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="bg-white rounded-xl p-5 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-800">{title}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
