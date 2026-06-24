@@ -209,6 +209,7 @@ function Painel({ session }) {
   const delClient = (id) => setData((d) => ({ ...d, clients: d.clients.filter((c) => c.id !== id), tasks: d.tasks.filter((t) => t.clientId !== id) }));
   const updateClient = (id, patch) => setData((d) => ({ ...d, clients: d.clients.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
   const addMeeting = (m) => setData((d) => ({ ...d, meetings: [...d.meetings, { id: uid(), ...m }] }));
+  const editMeeting = (id, patch) => setData((d) => ({ ...d, meetings: d.meetings.map((m) => (m.id === id ? { ...m, ...patch } : m)) }));
   const delMeeting = (id) => setData((d) => ({ ...d, meetings: d.meetings.filter((m) => m.id !== id) }));
   const setSetting = (k, v) => setData((d) => ({ ...d, settings: { ...d.settings, [k]: v } }));
   const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) } });
@@ -246,7 +247,7 @@ function Painel({ session }) {
         </nav>
 
         {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} />}
-        {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} delMeeting={delMeeting} />}
+        {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} />}
         {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
         {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} />}
         {["acohub", "novello", "pessoal", "freela"].includes(tab) && (
@@ -413,6 +414,8 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
     <div className="space-y-5">
       <p className="text-sm text-violet-700 capitalize font-medium">{dataExt}</p>
 
+      <Dashboard data={data} />
+
       <div className="bg-white rounded-xl border border-slate-200 p-4">
         <div className="flex items-center justify-between mb-2">
           <span className="text-sm font-semibold text-slate-700">Carga do dia</span>
@@ -458,6 +461,57 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
             </KColumn>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ data }) {
+  const [period, setPeriod] = useState("semana");
+  const ws = today0();
+  ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7));
+  const we = new Date(ws); we.setDate(ws.getDate() + 6);
+  const wsK = toKey(ws), weK = toKey(we);
+  const md = fromKey(TODAY);
+  const monthEnd = toKey(new Date(md.getFullYear(), md.getMonth() + 1, 0));
+  const ym = TODAY.slice(0, 7);
+  const inPeriod = (k) => { if (!k) return false; return period === "semana" ? (k >= wsK && k <= weK) : k.slice(0, 7) === ym; };
+  const periodEnd = period === "semana" ? weK : monthEnd;
+
+  const tasks = data.tasks;
+  const clientes = data.clients.length;
+  const pendentes = tasks.filter((t) => !t.done && t.status !== "espera").length;
+  const concluidas = tasks.filter((t) => t.done && inPeriod(t.doneDate)).length + tasks.reduce((n, t) => n + (t.subtasks || []).filter((s) => s.done && inPeriod(s.doneDate)).length, 0);
+  const atrasadas = tasks.filter((t) => !t.done && t.deadline && t.deadline < TODAY).length;
+  const espera = tasks.filter((t) => !t.done && t.status === "espera").length;
+  const proximas = tasks.filter((t) => !t.done && t.deadline && t.deadline >= TODAY && t.deadline <= periodEnd).length;
+  const sufixo = period === "semana" ? "(semana)" : "(mês)";
+
+  const boxes = [
+    { label: "Clientes", value: clientes, color: "bg-violet-100 text-violet-800" },
+    { label: "Pendentes", value: pendentes, color: "bg-slate-100 text-slate-700" },
+    { label: `Concluídas ${sufixo}`, value: concluidas, color: "bg-green-100 text-green-800" },
+    { label: "Atrasadas", value: atrasadas, color: "bg-red-100 text-red-800" },
+    { label: "Em espera", value: espera, color: "bg-amber-100 text-amber-800" },
+    { label: `A vencer ${sufixo}`, value: proximas, color: "bg-blue-100 text-blue-800" },
+  ];
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-slate-700">Resumo</h2>
+        <div className="flex gap-1">
+          <button onClick={() => setPeriod("semana")} className={`text-xs px-3 py-1 rounded-full border ${period === "semana" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Semana</button>
+          <button onClick={() => setPeriod("mes")} className={`text-xs px-3 py-1 rounded-full border ${period === "mes" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Mês</button>
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {boxes.map((b) => (
+          <div key={b.label} className={`rounded-lg p-2 ${b.color}`}>
+            <p className="text-xl font-bold leading-none">{b.value}</p>
+            <p className="text-xs mt-1 leading-tight">{b.label}</p>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -885,11 +939,12 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
   );
 }
 
-function Agenda({ data, addMeeting, delMeeting }) {
+function Agenda({ data, addMeeting, editMeeting, delMeeting }) {
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(TODAY);
   const [start, setStart] = useState("09:00");
   const [dur, setDur] = useState("60");
+  const [editId, setEditId] = useState(null);
 
   const submit = () => {
     if (!title.trim()) return;
@@ -918,12 +973,23 @@ function Agenda({ data, addMeeting, delMeeting }) {
 
       <Section title="Próximas reuniões" icon={Calendar}>
         {upcoming.length === 0 ? <p className="text-sm text-slate-400 py-2">Nenhuma reunião agendada.</p> :
-          upcoming.map((m) => (
+          upcoming.map((m) => editId === m.id ? (
+            <div key={m.id} className="py-2 border-b border-slate-100 last:border-0 bg-violet-50 rounded-lg px-2 my-1 space-y-1.5">
+              <input value={m.title} onChange={(e) => editMeeting(m.id, { title: e.target.value })} className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
+              <div className="flex gap-1.5 items-end flex-wrap">
+                <div className="flex flex-col"><label className="text-xs text-slate-500">Data</label><input type="date" value={m.date} onChange={(e) => editMeeting(m.id, { date: e.target.value })} className="border border-slate-300 rounded-lg px-2 py-1 text-sm" /></div>
+                <div className="flex flex-col"><label className="text-xs text-slate-500">Início</label><input type="time" value={m.start || ""} onChange={(e) => editMeeting(m.id, { start: e.target.value })} className="border border-slate-300 rounded-lg px-2 py-1 text-sm" /></div>
+                <div className="flex flex-col"><label className="text-xs text-slate-500">Min</label><input type="number" min="15" step="15" value={m.durationMin} onChange={(e) => editMeeting(m.id, { durationMin: Number(e.target.value) || 0 })} className="border border-slate-300 rounded-lg px-2 py-1 text-sm w-16" /></div>
+                <button onClick={() => setEditId(null)} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm ml-auto">OK</button>
+              </div>
+            </div>
+          ) : (
             <div key={m.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
               <span className="text-xs font-semibold text-violet-700 w-12">{fmtBR(m.date)}</span>
               <span className="text-sm font-mono text-slate-600 w-12">{m.start}</span>
               <span className="text-sm flex-1">{m.title}</span>
               <span className="text-xs text-slate-400">{Math.round(m.durationMin)}min</span>
+              <button onClick={() => setEditId(m.id)} className="text-slate-300 hover:text-violet-600"><Pencil size={14} /></button>
               <button onClick={() => delMeeting(m.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={15} /></button>
             </div>
           ))}
