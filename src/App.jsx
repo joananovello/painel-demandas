@@ -60,19 +60,21 @@ const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-sl
 const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [] };
 const migTasks = (ts) => (ts || []).map((t) => ({
   status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t,
-  subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, ...s })),
+  subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, externalOwner: false, ownerName: "", ...s })),
   notes: t.notes || "",
   doneDate: t.doneDate || (t.done ? (localDay(t.completedAt) || TODAY) : null),
   workDate: t.workDate || null,
+  externalOwner: t.externalOwner || false,
+  ownerName: t.ownerName || "",
 }));
 const migClients = (cs) => (cs || []).map((c) => ({ links: [], creds: [], notes: "", ...c }));
 
 function collectUnits(tasks) {
   const units = [];
   for (const t of tasks) {
-    if (t.done || t.status === "espera") continue;
+    if (t.done || t.status === "espera" || t.externalOwner) continue;
     const allSubs = t.subtasks || [];
-    const schSubs = allSubs.filter((s) => !s.done && s.deadline && (s.estTime || 0) > 0);
+    const schSubs = allSubs.filter((s) => !s.done && !s.externalOwner && s.deadline && (s.estTime || 0) > 0);
     if (allSubs.length > 0 && schSubs.length > 0) {
       for (const s of schSubs) units.push({ id: `${t.id}::${s.id}`, taskId: t.id, subId: s.id, deadline: s.deadline, estTime: s.estTime, urgency: t.urgency, workDate: s.workDate || null });
     } else if (t.deadline && (t.estTime || 0) > 0) {
@@ -205,7 +207,7 @@ function Painel({ session }) {
 
   const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours), [data]);
 
-  const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, ...t }] }));
+  const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, externalOwner: false, ownerName: "", ...t }] }));
   const editTask = (id, patch) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
   const editSubtask = (taskId, subId, patch) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === taskId ? { ...t, subtasks: (t.subtasks || []).map((s) => (s.id === subId ? { ...s, ...patch } : s)) } : t)) }));
   const toggleTask = (id) => setData((d) => {
@@ -328,7 +330,8 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1">
         <span className="text-xs text-slate-400">{tag}</span>
-        {todayHours > 0 && <span className="text-xs font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
+        {t.externalOwner && <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 font-medium">cobrar: {t.ownerName || "externo"}</span>}
+        {!t.externalOwner && todayHours > 0 && <span className="text-xs font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
         {t.deadline && <span className={`text-xs ${overdue ? "text-red-600 font-medium" : "text-slate-400"}`}>{overdue ? "vencida " : "entrega "}{fmtBR(t.deadline)}</span>}
         {prog && <span className="text-xs text-violet-500 flex items-center gap-0.5"><ListChecks size={10} />{prog}</span>}
         {(t.notes || "").trim() && <StickyNote size={10} className="text-slate-300" />}
@@ -375,7 +378,8 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-xs">
-        {todayHours > 0 && <span className="font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
+        {sub.externalOwner && <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 font-medium">cobrar: {sub.ownerName || "externo"}</span>}
+        {!sub.externalOwner && todayHours > 0 && <span className="font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
         {sub.deadline && <span className={overdue ? "text-red-600 font-medium" : "text-slate-400"}>{overdue ? "vencida " : "entrega "}{fmtBR(sub.deadline)}</span>}
         {sub.estTime > 0 && <span className="text-slate-300">{sub.estTime}h</span>}
         {latePlan && <span className="text-red-500">planejado após prazo</span>}
@@ -796,12 +800,23 @@ function TaskDetail({ task, data, onEdit, onDelete, onClose }) {
   };
 
   const SubRow = (s) => (
-    <div key={s.id} className="flex items-center gap-1.5 py-1">
-      <button onClick={() => toggleS(s)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center ${s.done ? "bg-violet-600 border-violet-600 text-white" : "border-slate-300"}`}>{s.done && <Check size={11} />}</button>
-      <input value={s.title} onChange={(e) => upSub(s.id, { title: e.target.value })} className={`flex-1 min-w-0 text-sm border-b border-transparent focus:border-slate-300 outline-none ${s.done ? "line-through text-slate-400" : ""}`} />
-      <input type="date" value={s.deadline || ""} onChange={(e) => upSub(s.id, { deadline: e.target.value || null })} className="text-xs border border-slate-200 rounded px-1 py-0.5 w-24 shrink-0" />
-      <input type="number" min="0" step="0.5" value={s.estTime || ""} onChange={(e) => upSub(s.id, { estTime: Number(e.target.value) || 0 })} placeholder="h" className="text-xs border border-slate-200 rounded px-1 py-0.5 w-10 shrink-0" />
-      <button onClick={() => delSub(s.id)} className="text-slate-300 hover:text-red-500 shrink-0"><Trash2 size={13} /></button>
+    <div key={s.id} className="py-1 border-b border-slate-100 last:border-0">
+      <div className="flex items-center gap-1.5">
+        <button onClick={() => toggleS(s)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center ${s.done ? "bg-violet-600 border-violet-600 text-white" : "border-slate-300"}`}>{s.done && <Check size={11} />}</button>
+        <input value={s.title} onChange={(e) => upSub(s.id, { title: e.target.value })} className={`flex-1 min-w-0 text-sm border-b border-transparent focus:border-slate-300 outline-none ${s.done ? "line-through text-slate-400" : ""}`} />
+        <input type="date" value={s.deadline || ""} onChange={(e) => upSub(s.id, { deadline: e.target.value || null })} className="text-xs border border-slate-200 rounded px-1 py-0.5 w-24 shrink-0" />
+        <input type="number" min="0" step="0.5" value={s.estTime || ""} onChange={(e) => upSub(s.id, { estTime: Number(e.target.value) || 0 })} placeholder="h" className="text-xs border border-slate-200 rounded px-1 py-0.5 w-10 shrink-0" />
+        <button onClick={() => delSub(s.id)} className="text-slate-300 hover:text-red-500 shrink-0"><Trash2 size={13} /></button>
+      </div>
+      <div className="flex items-center gap-2 mt-1 pl-6">
+        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+          <input type="checkbox" checked={!!s.externalOwner} onChange={(e) => upSub(s.id, { externalOwner: e.target.checked, ownerName: e.target.checked ? (s.ownerName || "") : "" })} className="w-3.5 h-3.5 accent-sky-500" />
+          <span className="text-xs text-slate-500">Responsável externo</span>
+        </label>
+        {s.externalOwner && (
+          <input value={s.ownerName || ""} onChange={(e) => upSub(s.id, { ownerName: e.target.value })} placeholder="Nome" className="flex-1 border border-slate-200 rounded px-2 py-0.5 text-xs" />
+        )}
+      </div>
     </div>
   );
 
@@ -816,6 +831,17 @@ function TaskDetail({ task, data, onEdit, onDelete, onClose }) {
         <input value={t.title} onChange={(e) => onEdit(t.id, { title: e.target.value })} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-medium mb-2" />
         <TaskFields t={t} clients={data.clients} onChange={(patch) => onEdit(t.id, patch)} allowArea={true} />
         {hasSchedulableSubs && <p className="text-xs text-violet-500 mt-1">Esta demanda tem subtarefas com prazo, então o cálculo do dia agenda as subtarefas (o tempo da demanda mãe é ignorado).</p>}
+
+        <div className="mt-3 flex flex-col gap-1.5">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" checked={!!t.externalOwner} onChange={(e) => onEdit(t.id, { externalOwner: e.target.checked, ownerName: e.target.checked ? (t.ownerName || "") : "" })} className="w-4 h-4 accent-sky-500" />
+            <span className="text-sm text-slate-600">Responsável externo (só preciso cobrar)</span>
+          </label>
+          {t.externalOwner && (
+            <input value={t.ownerName || ""} onChange={(e) => onEdit(t.id, { ownerName: e.target.value })} placeholder="Nome de quem vai fazer" className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm" />
+          )}
+          {t.externalOwner && <p className="text-xs text-sky-600">Esta demanda não conta nas suas horas do dia ou da semana.</p>}
+        </div>
 
         <div className="mt-2 flex items-center gap-2">
           <span className="text-xs text-slate-500">Dia planejado para fazer</span>
@@ -1103,10 +1129,22 @@ function Agenda({ data, addMeeting, editMeeting, delMeeting }) {
 
       {past.length > 0 && (
         <Section title="Anteriores" icon={Clock}>
-          {past.slice(0, 8).map((m) => (
+          {past.slice(0, 8).map((m) => editId === m.id ? (
+            <div key={m.id} className="py-2 border-b border-slate-100 last:border-0 bg-violet-50 rounded-lg px-2 my-1 space-y-1.5">
+              <input value={m.title} onChange={(e) => editMeeting(m.id, { title: e.target.value })} className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
+              <div className="flex gap-1.5 items-end flex-wrap">
+                <div className="flex flex-col"><label className="text-xs text-slate-500">Data</label><input type="date" value={m.date} onChange={(e) => editMeeting(m.id, { date: e.target.value })} className="border border-slate-300 rounded-lg px-2 py-1 text-sm" /></div>
+                <div className="flex flex-col"><label className="text-xs text-slate-500">Início</label><input type="time" value={m.start || ""} onChange={(e) => editMeeting(m.id, { start: e.target.value })} className="border border-slate-300 rounded-lg px-2 py-1 text-sm" /></div>
+                <div className="flex flex-col"><label className="text-xs text-slate-500">Min</label><input type="number" min="15" step="15" value={m.durationMin} onChange={(e) => editMeeting(m.id, { durationMin: Number(e.target.value) || 0 })} className="border border-slate-300 rounded-lg px-2 py-1 text-sm w-16" /></div>
+                <button onClick={() => setEditId(null)} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm ml-auto">OK</button>
+              </div>
+            </div>
+          ) : (
             <div key={m.id} className="flex items-center gap-3 py-1.5 border-b border-slate-100 last:border-0 opacity-60">
               <span className="text-xs text-slate-400 w-12">{fmtBR(m.date)}</span>
               <span className="text-sm flex-1">{m.title}</span>
+              <span className="text-xs text-slate-400">{Math.round(m.durationMin)}min</span>
+              <button onClick={() => setEditId(m.id)} className="text-slate-300 hover:text-violet-600"><Pencil size={14} /></button>
               <button onClick={() => delMeeting(m.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={14} /></button>
             </div>
           ))}
