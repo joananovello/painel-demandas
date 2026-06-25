@@ -232,7 +232,7 @@ function Painel({ session }) {
   const toggleSubtask = (taskId, subId) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === taskId ? { ...t, subtasks: (t.subtasks || []).map((s) => (s.id === subId ? { ...s, done: !s.done, doneDate: !s.done ? TODAY : null } : s)) } : t)) }));
   const setStatus = (id, status) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, status, statusSince: nowISO() } : t)) }));
   const delTask = (id) => setData((d) => ({ ...d, tasks: d.tasks.filter((t) => t.id !== id) }));
-  const addClient = (name) => setData((d) => ({ ...d, clients: [...d.clients, { id: uid(), name, links: [], creds: [], notes: "" }] }));
+  const addClient = (name) => setData((d) => ({ ...d, clients: [...d.clients, { id: uid(), name, links: [], creds: [], notes: "", socialMonths: [] }] }));
   const delClient = (id) => setData((d) => ({ ...d, clients: d.clients.filter((c) => c.id !== id), tasks: d.tasks.filter((t) => t.clientId !== id) }));
   const updateClient = (id, patch) => setData((d) => ({ ...d, clients: d.clients.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
   const addMeeting = (m) => setData((d) => ({ ...d, meetings: [...d.meetings, { id: uid(), ...m }] }));
@@ -1077,6 +1077,7 @@ function PostsView({ client, updateClient, clientTasks }) {
 }
 
 
+function ClientInfo({ client, updateClient }) {
   const links = client.links || [];
   const creds = client.creds || [];
   const [lLabel, setLLabel] = useState("");
@@ -1153,7 +1154,8 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
   const [editing, setEditing] = useState(null);
   const [editName, setEditName] = useState("");
 
-  const openTab = (id) => { if (openClient === id) { setOpenClient(null); } else { setOpenClient(id); setView("demandas"); } };  const startEdit = (c) => { setEditing(c.id); setEditName(c.name); };
+  const openTab = (id) => { if (openClient === id) { setOpenClient(null); } else { setOpenClient(id); setView("demandas"); } };
+  const startEdit = (c) => { setEditing(c.id); setEditName(c.name); };
   const saveEdit = (id) => { if (editName.trim()) updateClient(id, { name: editName.trim() }); setEditing(null); };
   const sortedClients = [...data.clients].sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" }));
 
