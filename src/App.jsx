@@ -55,6 +55,11 @@ const advanceDate = (key, rec) => {
   else if (rec === "monthly") d.setMonth(d.getMonth() + 1);
   return toKey(d);
 };
+const weekOfMonth = (key) => {
+  const d = fromKey(key || TODAY);
+  return Math.min(5, Math.ceil(d.getDate() / 7));
+};
+const TODAY_WEEK = weekOfMonth(TODAY);
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
 
 const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [] };
@@ -762,7 +767,7 @@ function TaskFields({ t, clients, onChange, allowArea }) {
 }
 
 function TaskForm({ area, clients, onAdd, onClose }) {
-  const [t, setT] = useState({ title: "", area, clientId: area === "cliente" ? (clients[0]?.id || null) : null, scope: area === "cliente" ? "semana" : "pontual", deadline: "", estTime: 1, urgency: "media", recurrence: "none" });
+  const [t, setT] = useState({ title: "", area, clientId: area === "cliente" ? (clients[0]?.id || null) : null, scope: area === "cliente" ? "semana" : "pontual", deadline: TODAY, estTime: 1, urgency: "media", recurrence: "none" });
   const ch = (patch) => setT((p) => ({ ...p, ...patch }));
   const submit = () => { if (!t.title.trim()) return; onAdd({ ...t, title: t.title.trim(), deadline: t.deadline || null }); onClose(); };
 
@@ -785,15 +790,15 @@ function TaskDetail({ task, data, onEdit, onDelete, onClose }) {
   const subs = t.subtasks || [];
   const hasSchedulableSubs = subs.some((s) => s.deadline && (s.estTime || 0) > 0);
   const [stitle, setStitle] = useState("");
-  const [sdate, setSdate] = useState("");
-  const [stime, setStime] = useState("");
-  const [sweek, setSweek] = useState(1);
+  const [sdate, setSdate] = useState(TODAY);
+  const [stime, setStime] = useState("1");
+  const [sweek, setSweek] = useState(TODAY_WEEK);
 
   const setSubs = (arr) => onEdit(t.id, { subtasks: arr });
   const addSub = () => {
     if (!stitle.trim()) return;
-    setSubs([...subs, { id: uid(), title: stitle.trim(), deadline: sdate || null, estTime: Number(stime) || 0, week: isMonthly ? Number(sweek) : null, done: false, workDate: null }]);
-    setStitle(""); setSdate(""); setStime("");
+    setSubs([...subs, { id: uid(), title: stitle.trim(), deadline: sdate || null, estTime: Number(stime) || 0, week: isMonthly ? Number(sweek) : null, done: false, workDate: null, externalOwner: false, ownerName: "" }]);
+    setStitle(""); setSdate(TODAY); setStime("1"); setSweek(TODAY_WEEK);
   };
   const upSub = (id, patch) => setSubs(subs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   const delSub = (id) => setSubs(subs.filter((s) => s.id !== id));
