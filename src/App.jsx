@@ -71,10 +71,18 @@ const migClients = (cs) => (cs || []).map((c) => ({ links: [], creds: [], notes:
 
 const POST_TIPOS = ["Feed", "Reels", "Stories", "Carrossel", "BTS", "Outro"];
 const POST_STATUS = {
-  rascunho: { label: "Rascunho", bg: "bg-slate-100", text: "text-slate-600" },
-  aprovado: { label: "Aprovado", bg: "bg-amber-100", text: "text-amber-700" },
-  publicado: { label: "Publicado", bg: "bg-green-100", text: "text-green-700" },
+  em_copy: { label: "Em copy", bg: "bg-slate-100", text: "text-slate-600" },
+  add_conteudo: { label: "Add conteúdo", bg: "bg-zinc-100", text: "text-zinc-600" },
+  criar_arte: { label: "Criar arte", bg: "bg-purple-100", text: "text-purple-700" },
+  gravar: { label: "Gravar", bg: "bg-fuchsia-100", text: "text-fuchsia-700" },
+  editar: { label: "Editar", bg: "bg-indigo-100", text: "text-indigo-700" },
+  aprovacao: { label: "Aprovação", bg: "bg-amber-100", text: "text-amber-700" },
+  alteracao: { label: "Alteração", bg: "bg-orange-100", text: "text-orange-700" },
+  programado: { label: "Programado", bg: "bg-blue-100", text: "text-blue-700" },
+  postado: { label: "Postado", bg: "bg-green-100", text: "text-green-700" },
+  cancelado: { label: "Cancelado", bg: "bg-red-100", text: "text-red-600" },
 };
+const POST_STATUS_DEFAULT = "em_copy";
 
 function collectUnits(tasks) {
   const units = [];
@@ -937,19 +945,27 @@ function AreaView({ area, data, addTask, toggleTask, delTask, setStatus, onOpen,
   );
 }
 
-function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMonth, onAddPost, onUpdatePost, onDeletePost, onCopy }) {
+function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMonth, onAddPost, onUpdatePost, onDeletePost, onCopy, onPasteList }) {
   const linked = clientTasks.find((t) => t.id === m.taskId);
   const posts = (m.posts || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-  const counts = { rascunho: 0, aprovado: 0, publicado: 0 };
-  posts.forEach((p) => { if (counts[p.status] != null) counts[p.status]++; });
+  const postado = posts.filter((p) => p.status === "postado").length;
+  const aprovacao = posts.filter((p) => p.status === "aprovacao").length;
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+
+  const doPaste = () => {
+    const lines = pasteText.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length) onPasteList(m.id, lines);
+    setPasteText(""); setShowPaste(false);
+  };
+
   return (
     <div className={`rounded-xl border p-3 mb-3 ${isArchive ? "border-slate-200 bg-slate-50 opacity-70" : "border-violet-200 bg-white"}`}>
       <div className="flex items-center gap-2 mb-2 flex-wrap">
         <span className="text-sm font-semibold text-slate-700 flex-1">{m.name}</span>
         <span className="text-xs text-slate-400">{posts.length} posts</span>
-        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{counts.rascunho}r</span>
-        <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{counts.aprovado}apr</span>
-        <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">{counts.publicado}pub</span>
+        {aprovacao > 0 && <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{aprovacao} p/ aprovar</span>}
+        <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">{postado} postados</span>
         <button onClick={() => onCopy(m)} title="Copiar mês formatado" className="text-slate-300 hover:text-violet-600"><Copy size={13} /></button>
         {isArchive
           ? <button onClick={() => onUpdateMonth(m.id, { done: false })} className="text-xs text-violet-500 hover:text-violet-700">Reabrir</button>
@@ -971,13 +987,14 @@ function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMo
               <th className="py-1 pr-2 font-medium w-20">Data</th>
               <th className="py-1 pr-2 font-medium w-24">Tipo</th>
               <th className="py-1 pr-2 font-medium">Descrição</th>
-              <th className="py-1 pr-2 font-medium w-28">Status</th>
+              <th className="py-1 pr-2 font-medium w-32">Status</th>
+              <th className="py-1 pr-2 font-medium w-28">Resp. externo</th>
               <th className="py-1 w-5" />
             </tr>
           </thead>
           <tbody>
             {posts.map((p) => (
-              <tr key={p.id} className="border-b border-slate-50">
+              <tr key={p.id} className="border-b border-slate-50 align-top">
                 <td className="py-1 pr-2">
                   <input type="date" value={p.date || ""} onChange={(e) => onUpdatePost(m.id, p.id, { date: e.target.value || "" })} className="border border-slate-200 rounded px-1 py-0.5 w-full" />
                 </td>
@@ -990,9 +1007,20 @@ function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMo
                   <input value={p.desc || ""} onChange={(e) => onUpdatePost(m.id, p.id, { desc: e.target.value })} placeholder="Descreva o post" className="border border-slate-200 rounded px-1 py-0.5 w-full" />
                 </td>
                 <td className="py-1 pr-2">
-                  <select value={p.status} onChange={(e) => onUpdatePost(m.id, p.id, { status: e.target.value })} className={`border border-slate-200 rounded px-1 py-0.5 w-full ${POST_STATUS[p.status]?.bg} ${POST_STATUS[p.status]?.text}`}>
+                  <select value={p.status} onChange={(e) => onUpdatePost(m.id, p.id, { status: e.target.value })} className={`border border-slate-200 rounded px-1 py-0.5 w-full font-medium ${POST_STATUS[p.status]?.bg} ${POST_STATUS[p.status]?.text}`}>
                     {Object.entries(POST_STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                   </select>
+                </td>
+                <td className="py-1 pr-2">
+                  <div className="flex flex-col gap-0.5">
+                    <label className="flex items-center gap-1 cursor-pointer select-none">
+                      <input type="checkbox" checked={!!p.externalOwner} onChange={(e) => onUpdatePost(m.id, p.id, { externalOwner: e.target.checked, ownerName: e.target.checked ? (p.ownerName || "") : "" })} className="w-3 h-3 accent-sky-500" />
+                      <span className="text-slate-400">externo</span>
+                    </label>
+                    {p.externalOwner && (
+                      <input value={p.ownerName || ""} onChange={(e) => onUpdatePost(m.id, p.id, { ownerName: e.target.value })} placeholder="Nome" className="border border-slate-200 rounded px-1 py-0.5 w-full" />
+                    )}
+                  </div>
                 </td>
                 <td className="py-1">
                   <button onClick={() => onDeletePost(m.id, p.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={12} /></button>
@@ -1003,9 +1031,24 @@ function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMo
         </table>
       </div>
       {!isArchive && (
-        <button onClick={() => onAddPost(m.id)} className="mt-2 flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800">
-          <Plus size={13} /> Adicionar post
-        </button>
+        <div className="mt-2 flex items-center gap-3 flex-wrap">
+          <button onClick={() => onAddPost(m.id)} className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800">
+            <Plus size={13} /> Adicionar post
+          </button>
+          <button onClick={() => setShowPaste(!showPaste)} className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800">
+            <ListChecks size={13} /> Colar lista
+          </button>
+        </div>
+      )}
+      {showPaste && !isArchive && (
+        <div className="mt-2 bg-violet-50 rounded-lg p-2 border border-violet-100">
+          <p className="text-xs text-slate-500 mb-1">Cole uma descrição por linha. Cada linha vira um post (tipo Feed, status Em copy, data vazia).</p>
+          <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder={"Reels sobre bastidores\nCarrossel de dicas\nStories enquete..."} className="w-full h-24 border border-slate-300 rounded-lg p-2 text-xs" />
+          <div className="flex gap-2 mt-1">
+            <button onClick={doPaste} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-xs font-medium">Importar</button>
+            <button onClick={() => { setShowPaste(false); setPasteText(""); }} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs">Cancelar</button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1027,7 +1070,13 @@ function PostsView({ client, updateClient, clientTasks }) {
   const addPost = (mid) => {
     const m = months.find((x) => x.id === mid);
     if (!m) return;
-    updateMonth(mid, { posts: [...(m.posts || []), { id: uid(), date: "", tipo: "Feed", desc: "", status: "rascunho" }] });
+    updateMonth(mid, { posts: [...(m.posts || []), { id: uid(), date: "", tipo: "Feed", desc: "", status: POST_STATUS_DEFAULT, externalOwner: false, ownerName: "" }] });
+  };
+  const pasteList = (mid, lines) => {
+    const m = months.find((x) => x.id === mid);
+    if (!m) return;
+    const novos = lines.map((desc) => ({ id: uid(), date: "", tipo: "Feed", desc, status: POST_STATUS_DEFAULT, externalOwner: false, ownerName: "" }));
+    updateMonth(mid, { posts: [...(m.posts || []), ...novos] });
   };
   const updatePost = (mid, pid, patch) => {
     const m = months.find((x) => x.id === mid);
@@ -1044,7 +1093,8 @@ function PostsView({ client, updateClient, clientTasks }) {
     const header = `📅 ${m.name}${linked ? ` — ${linked.title}` : ""}`;
     const rows = (m.posts || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((p) => {
       const d = p.date ? fmtBR(p.date) : "sem data";
-      return `${d} | ${p.tipo} | ${p.desc || "(sem descrição)"} | ${POST_STATUS[p.status]?.label || p.status}`;
+      const resp = p.externalOwner ? ` (resp: ${p.ownerName || "externo"})` : "";
+      return `${d} | ${p.tipo} | ${p.desc || "(sem descrição)"} | ${POST_STATUS[p.status]?.label || p.status}${resp}`;
     });
     navigator.clipboard.writeText([header, ...rows].join("\n")).catch(() => {});
   };
@@ -1060,7 +1110,7 @@ function PostsView({ client, updateClient, clientTasks }) {
       </div>
       {active.length === 0 && <p className="text-sm text-slate-400 mb-3">Nenhum mês ativo. Crie um acima.</p>}
       {active.map((m) => (
-        <SocialMonthBlock key={m.id} m={m} isArchive={false} clientTasks={clientTasks} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} />
+        <SocialMonthBlock key={m.id} m={m} isArchive={false} clientTasks={clientTasks} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
       ))}
       {archived.length > 0 && (
         <div className="mt-2">
@@ -1068,7 +1118,7 @@ function PostsView({ client, updateClient, clientTasks }) {
             {showArchive ? "Ocultar" : "Ver"} arquivo ({archived.length} {archived.length === 1 ? "mês" : "meses"})
           </button>
           {showArchive && archived.map((m) => (
-            <SocialMonthBlock key={m.id} m={m} isArchive={true} clientTasks={clientTasks} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} />
+            <SocialMonthBlock key={m.id} m={m} isArchive={true} clientTasks={clientTasks} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
           ))}
         </div>
       )}
