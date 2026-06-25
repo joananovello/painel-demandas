@@ -67,7 +67,14 @@ const migTasks = (ts) => (ts || []).map((t) => ({
   externalOwner: t.externalOwner || false,
   ownerName: t.ownerName || "",
 }));
-const migClients = (cs) => (cs || []).map((c) => ({ links: [], creds: [], notes: "", ...c }));
+const migClients = (cs) => (cs || []).map((c) => ({ links: [], creds: [], notes: "", socialMonths: [], ...c }));
+
+const POST_TIPOS = ["Feed", "Reels", "Stories", "Carrossel", "BTS", "Outro"];
+const POST_STATUS = {
+  rascunho: { label: "Rascunho", bg: "bg-slate-100", text: "text-slate-600" },
+  aprovado: { label: "Aprovado", bg: "bg-amber-100", text: "text-amber-700" },
+  publicado: { label: "Publicado", bg: "bg-green-100", text: "text-green-700" },
+};
 
 function collectUnits(tasks) {
   const units = [];
@@ -930,7 +937,166 @@ function AreaView({ area, data, addTask, toggleTask, delTask, setStatus, onOpen,
   );
 }
 
-function ClientInfo({ client, updateClient }) {
+function PostsView({ client, updateClient, clientTasks }) {
+  const months = client.socialMonths || [];
+  const [newMonthName, setNewMonthName] = useState("");
+  const [showArchive, setShowArchive] = useState(false);
+
+  const setMonths = (arr) => updateClient(client.id, { socialMonths: arr });
+  const addMonth = () => {
+    if (!newMonthName.trim()) return;
+    setMonths([...months, { id: uid(), name: newMonthName.trim(), taskId: null, done: false, posts: [] }]);
+    setNewMonthName("");
+  };
+  const updateMonth = (mid, patch) => setMonths(months.map((m) => m.id === mid ? { ...m, ...patch } : m));
+  const deleteMonth = (mid) => setMonths(months.filter((m) => m.id !== mid));
+  const concludeMonth = (mid) => updateMonth(mid, { done: true });
+  const reopenMonth = (mid) => updateMonth(mid, { done: false });
+
+  const addPost = (mid) => {
+    const m = months.find((x) => x.id === mid);
+    if (!m) return;
+    const newPost = { id: uid(), date: "", tipo: "Feed", desc: "", status: "rascunho" };
+    updateMonth(mid, { posts: [...(m.posts || []), newPost] });
+  };
+  const updatePost = (mid, pid, patch) => {
+    const m = months.find((x) => x.id === mid);
+    if (!m) return;
+    updateMonth(mid, { posts: (m.posts || []).map((p) => p.id === pid ? { ...p, ...patch } : p) });
+  };
+  const deletePost = (mid, pid) => {
+    const m = months.find((x) => x.id === mid);
+    if (!m) return;
+    updateMonth(mid, { posts: (m.posts || []).filter((p) => p.id !== pid) });
+  };
+
+  const copyMonth = (m) => {
+    const linked = clientTasks.find((t) => t.id === m.taskId);
+    const header = `📅 ${m.name}${linked ? ` — ${linked.title}` : ""}\n${"─".repeat(40)}`;
+    const rows = (m.posts || []).sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((p) => {
+      const d = p.date ? fmtBR(p.date) : "sem data";
+      return `${d} | ${p.tipo} | ${p.desc || "(sem descrição)"} | ${POST_STATUS[p.status]?.label || p.status}`;
+    });
+    const text = [header, ...rows].join("\n");
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  const active = months.filter((m) => !m.done);
+  const archived = months.filter((m) => m.done);
+
+  const MonthBlock = ({ m, isArchive }) => {
+    const linked = clientTasks.find((t) => t.id === m.taskId);
+    const posts = (m.posts || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    const counts = { rascunho: 0, aprovado: 0, publicado: 0 };
+    posts.forEach((p) => { if (counts[p.status] != null) counts[p.status]++; });
+
+    return (
+      <div className={`rounded-xl border p-3 mb-3 ${isArchive ? "border-slate-200 bg-slate-50 opacity-70" : "border-violet-200 bg-white"}`}>
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
+          <span className="text-sm font-semibold text-slate-700 flex-1">{m.name}</span>
+          <span className="text-xs text-slate-400">{posts.length} posts</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{counts.rascunho}r</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{counts.aprovado}apr</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">{counts.publicado}pub</span>
+          <button onClick={() => copyMonth(m)} title="Copiar mês formatado" className="text-slate-300 hover:text-violet-600"><Copy size={13} /></button>
+          {isArchive
+            ? <button onClick={() => reopenMonth(m.id)} className="text-xs text-violet-500 hover:text-violet-700">Reabrir</button>
+            : <button onClick={() => concludeMonth(m.id)} className="text-xs text-slate-400 hover:text-violet-600">Concluir mês</button>}
+          <button onClick={() => deleteMonth(m.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+        </div>
+
+        <div className="mb-2 flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-slate-400">Demanda vinculada:</span>
+          <select
+            value={m.taskId || ""}
+            onChange={(e) => updateMonth(m.id, { taskId: e.target.value || null })}
+            className="text-xs border border-slate-200 rounded px-2 py-1 flex-1 min-w-0"
+          >
+            <option value="">Nenhuma</option>
+            {clientTasks.filter((t) => !t.done).map((t) => (
+              <option key={t.id} value={t.id}>{t.title}</option>
+            ))}
+          </select>
+          {linked && <span className="text-xs text-violet-500 truncate max-w-xs">{linked.title}</span>}
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="text-left text-slate-400 border-b border-slate-100">
+                <th className="py-1 pr-2 font-medium w-20">Data</th>
+                <th className="py-1 pr-2 font-medium w-24">Tipo</th>
+                <th className="py-1 pr-2 font-medium">Descrição</th>
+                <th className="py-1 pr-2 font-medium w-28">Status</th>
+                <th className="py-1 w-5" />
+              </tr>
+            </thead>
+            <tbody>
+              {posts.map((p) => (
+                <tr key={p.id} className="border-b border-slate-50 hover:bg-violet-50/40">
+                  <td className="py-1 pr-2">
+                    <input type="date" value={p.date || ""} onChange={(e) => updatePost(m.id, p.id, { date: e.target.value || "" })} className="border border-slate-200 rounded px-1 py-0.5 w-full" />
+                  </td>
+                  <td className="py-1 pr-2">
+                    <select value={p.tipo} onChange={(e) => updatePost(m.id, p.id, { tipo: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5 w-full">
+                      {POST_TIPOS.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
+                    </select>
+                  </td>
+                  <td className="py-1 pr-2">
+                    <input value={p.desc || ""} onChange={(e) => updatePost(m.id, p.id, { desc: e.target.value })} placeholder="Descreva o post" className="border border-slate-200 rounded px-1 py-0.5 w-full" />
+                  </td>
+                  <td className="py-1 pr-2">
+                    <select value={p.status} onChange={(e) => updatePost(m.id, p.id, { status: e.target.value })} className={`border border-slate-200 rounded px-1 py-0.5 w-full ${POST_STATUS[p.status]?.bg} ${POST_STATUS[p.status]?.text}`}>
+                      {Object.entries(POST_STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                    </select>
+                  </td>
+                  <td className="py-1">
+                    <button onClick={() => deletePost(m.id, p.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={12} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {!isArchive && (
+          <button onClick={() => addPost(m.id)} className="mt-2 flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800">
+            <Plus size={13} /> Adicionar post
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-3 items-center">
+        <input
+          value={newMonthName}
+          onChange={(e) => setNewMonthName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addMonth(); }}
+          placeholder="Nome do mês (ex: Julho 2025)"
+          className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+        />
+        <button onClick={addMonth} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm"><Plus size={15} /></button>
+      </div>
+
+      {active.length === 0 && <p className="text-sm text-slate-400 mb-3">Nenhum mês ativo. Crie um acima.</p>}
+      {active.map((m) => <MonthBlock key={m.id} m={m} isArchive={false} />)}
+
+      {archived.length > 0 && (
+        <div className="mt-2">
+          <button onClick={() => setShowArchive(!showArchive)} className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
+            {showArchive ? "Ocultar" : "Ver"} arquivo ({archived.length} {archived.length === 1 ? "mês" : "meses"})
+          </button>
+          {showArchive && archived.map((m) => <MonthBlock key={m.id} m={m} isArchive={true} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
   const links = client.links || [];
   const creds = client.creds || [];
   const [lLabel, setLLabel] = useState("");
@@ -1007,8 +1173,7 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
   const [editing, setEditing] = useState(null);
   const [editName, setEditName] = useState("");
 
-  const openTab = (id) => { if (openClient === id) { setOpenClient(null); } else { setOpenClient(id); setView("demandas"); } };
-  const startEdit = (c) => { setEditing(c.id); setEditName(c.name); };
+  const openTab = (id) => { if (openClient === id) { setOpenClient(null); } else { setOpenClient(id); setView("demandas"); } };  const startEdit = (c) => { setEditing(c.id); setEditName(c.name); };
   const saveEdit = (id) => { if (editName.trim()) updateClient(id, { name: editName.trim() }); setEditing(null); };
   const sortedClients = [...data.clients].sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" }));
 
@@ -1045,11 +1210,14 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
                 <div className="pb-3 pl-1">
                   <div className="flex gap-1 mb-2">
                     <button onClick={() => setView("demandas")} className={`text-xs px-3 py-1 rounded-full border ${view === "demandas" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Demandas</button>
+                    <button onClick={() => setView("posts")} className={`text-xs px-3 py-1 rounded-full border ${view === "posts" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Posts</button>
                     <button onClick={() => setView("info")} className={`text-xs px-3 py-1 rounded-full border ${view === "info" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Informações</button>
                   </div>
                   {view === "demandas" ? (
                     ct.length === 0 ? <p className="text-xs text-slate-400 mb-2">Sem demandas para este cliente.</p> :
                       <TaskGroups tasks={ct} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={true} />
+                  ) : view === "posts" ? (
+                    <PostsView client={c} updateClient={updateClient} clientTasks={ct} />
                   ) : (
                     <ClientInfo client={c} updateClient={updateClient} />
                   )}
