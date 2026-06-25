@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical } from "lucide-react";
+import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star } from "lucide-react";
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 
@@ -62,7 +62,7 @@ const weekOfMonth = (key) => {
 const TODAY_WEEK = weekOfMonth(TODAY);
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
 
-const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [] };
+const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [] };
 const migTasks = (ts) => (ts || []).map((t) => ({
   status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t,
   subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, externalOwner: false, ownerName: "", ...s })),
@@ -207,6 +207,7 @@ function Painel({ session }) {
           p.tasks = migTasks(p.tasks);
           p.clients = migClients(p.clients);
           p.settings = { workHours: 8, stuckDays: 7, ...(p.settings || {}) };
+          p.priorities = Array.isArray(p.priorities) ? p.priorities : [];
           setData({ ...emptyData, ...p });
         }
       } catch (e) {}
@@ -252,47 +253,70 @@ function Painel({ session }) {
   const editMeeting = (id, patch) => setData((d) => ({ ...d, meetings: d.meetings.map((m) => (m.id === id ? { ...m, ...patch } : m)) }));
   const delMeeting = (id) => setData((d) => ({ ...d, meetings: d.meetings.filter((m) => m.id !== id) }));
   const setSetting = (k, v) => setData((d) => ({ ...d, settings: { ...d.settings, [k]: v } }));
+  const togglePriority = (id) => setData((d) => {
+    const cur = d.priorities || [];
+    if (cur.includes(id)) return { ...d, priorities: cur.filter((x) => x !== id) };
+    if (cur.length >= 3) return { ...d, priorities: [...cur.slice(1), id] };
+    return { ...d, priorities: [...cur, id] };
+  });
   const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) } });
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando seus dados...</div>;
   const sd = data.settings.stuckDays;
   const detailTask = detailId ? data.tasks.find((t) => t.id === detailId) : null;
+  const hora = new Date().getHours();
+  const saudacao = hora < 12 ? "Bom dia" : hora < 18 ? "Boa tarde" : "Boa noite";
+  const dataExt = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
 
   return (
     <div className="min-h-screen bg-violet-50 text-slate-800">
       <style>{`@media print { .no-print{display:none !important;} body{background:#fff;} }`}</style>
-      <div className="max-w-3xl mx-auto p-4">
-        <header className="flex items-center justify-between mb-4">
-          <div>
-            <h1 className="text-xl font-bold text-violet-900">Painel de Demandas</h1>
-            <p className="text-xs text-violet-500">Joana • organização semanal e diária</p>
+      <div className="flex">
+        <aside className="no-print sticky top-0 h-screen w-16 shrink-0 bg-white border-r border-slate-200 flex flex-col items-center py-4 gap-1">
+          <div className="w-9 h-9 rounded-xl bg-violet-600 text-white flex items-center justify-center mb-3 shrink-0">
+            <CalendarClock size={20} />
           </div>
-          <div className="no-print flex gap-2">
-            <button onClick={() => setShowSettings(true)} className="p-2 rounded-lg bg-white border border-violet-200 text-violet-600 hover:bg-violet-100"><Settings size={18} /></button>
-            <button onClick={logout} title="Sair" className="p-2 rounded-lg bg-white border border-violet-200 text-violet-600 hover:bg-violet-100"><LogOut size={18} /></button>
-          </div>
-        </header>
-
-        <nav className="no-print flex gap-1 overflow-x-auto pb-2 mb-4">
           {TABS.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
             return (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`flex items-center gap-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium border ${active ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-600 border-slate-200 hover:bg-violet-100"}`}>
-                <Icon size={15} /> {t.label}
+              <button key={t.id} onClick={() => setTab(t.id)} title={t.label}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${active ? "bg-violet-100 text-violet-700" : "text-slate-400 hover:bg-slate-100 hover:text-violet-600"}`}>
+                <Icon size={19} />
               </button>
             );
           })}
-        </nav>
+          <div className="mt-auto flex flex-col items-center gap-1">
+            <button onClick={() => setShowSettings(true)} title="Configurações" className="w-10 h-10 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-violet-600"><Settings size={19} /></button>
+            <button onClick={logout} title="Sair" className="w-10 h-10 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-violet-600"><LogOut size={19} /></button>
+          </div>
+        </aside>
 
-        {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} />}
-        {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} />}
-        {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
-        {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} />}
-        {["acohub", "novello", "pessoal", "freela"].includes(tab) && (
-          <AreaView area={tab} data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} />
-        )}
+        <main className="flex-1 min-w-0">
+          <div className="max-w-5xl mx-auto p-4 md:p-6">
+            <header className="flex items-start justify-between mb-6 gap-4 flex-wrap">
+              <div>
+                <h1 className="text-2xl font-bold text-violet-900">{saudacao}, Joana! 👋</h1>
+                <p className="text-sm text-violet-500 capitalize">{dataExt}</p>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 px-4 py-2 flex items-center gap-3">
+                <Clock size={18} className="text-violet-500" />
+                <div>
+                  <p className="text-sm font-bold text-slate-700">{new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
+                  <p className="text-xs text-slate-400 capitalize">{new Date().toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })}</p>
+                </div>
+              </div>
+            </header>
+
+            {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} />}
+            {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} />}
+            {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
+            {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} />}
+            {["acohub", "novello", "pessoal", "freela"].includes(tab) && (
+              <AreaView area={tab} data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} />
+            )}
+          </div>
+        </main>
       </div>
 
       {detailTask && (
@@ -322,7 +346,7 @@ function subProgress(t) {
   return `${subs.filter((s) => s.done).length}/${subs.length}`;
 }
 
-function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, todayHours, draggable, onDragStart }) {
+function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, todayHours, draggable, onDragStart, onTogglePriority, isPriority }) {
   const u = URG[t.urgency];
   const client = t.clientId ? data.clients.find((c) => c.id === t.clientId) : null;
   const tag = t.area === "cliente" ? (client ? client.name : "Cliente") : AREAS[t.area].label;
@@ -347,6 +371,11 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
         <p onClick={() => onOpen && onOpen(t.id)} className={`text-sm flex-1 leading-snug cursor-pointer hover:text-violet-700 ${t.done ? "line-through text-slate-400" : ""}`}>
           {recurring && <Repeat size={11} className="inline text-violet-400 mr-0.5" />}{t.title}
         </p>
+        {onTogglePriority && !t.done && (
+          <button onClick={() => onTogglePriority(t.id)} title={isPriority ? "Remover das prioridades" : "Marcar como prioridade"} className="shrink-0 mt-0.5">
+            <Star size={14} className={isPriority ? "fill-amber-400 text-amber-400" : "text-slate-300 hover:text-amber-400"} />
+          </button>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1">
         <span className="text-xs text-slate-400">{tag}</span>
@@ -375,7 +404,7 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
   );
 }
 
-function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, todayHours, draggable, onDragStart }) {
+function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, todayHours, draggable, onDragStart, onTogglePriority, isPriority }) {
   const u = URG[task.urgency];
   const client = task.clientId ? data.clients.find((c) => c.id === task.clientId) : null;
   const tag = task.area === "cliente" ? (client ? client.name : "Cliente") : AREAS[task.area].label;
@@ -396,6 +425,11 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
           <p onClick={() => onOpen && onOpen(task.id)} className={`text-sm leading-snug cursor-pointer hover:text-violet-700 ${sub.done ? "line-through text-slate-400" : ""}`}>{sub.title}</p>
           <p className="text-xs text-slate-400 truncate">{tag} • {task.title}</p>
         </div>
+        {onTogglePriority && !sub.done && (
+          <button onClick={() => onTogglePriority(task.id)} title={isPriority ? "Remover das prioridades" : "Marcar como prioridade"} className="shrink-0 mt-0.5">
+            <Star size={14} className={isPriority ? "fill-amber-400 text-amber-400" : "text-slate-300 hover:text-amber-400"} />
+          </button>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-xs">
         {sub.externalOwner && <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 font-medium">cobrar: {sub.ownerName || "externo"}</span>}
@@ -436,10 +470,11 @@ function KColumn({ title, count, accent, today, hours, over, onDragOver, onDrop,
   );
 }
 
-function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen }) {
+function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority }) {
   const wh = data.settings.workHours;
   const sd = data.settings.stuckDays;
   const tasks = data.tasks;
+  const priorities = data.priorities || [];
   const meetHours = sched.meetingHours[TODAY] || 0;
   const setDoneDate = (id, v) => editTask(id, { doneDate: v });
   const setSubDoneDate = (tid, sid, v) => editSubtask(tid, sid, { doneDate: v });
@@ -481,6 +516,14 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
   const pct = Math.min(100, Math.round((committed / wh) * 100));
   const over = committed > wh + 0.01;
 
+  // Foco do dia: % de tarefas/subtarefas concluídas hoje vs total relevante de hoje
+  const feitoCount = feito.length;
+  const totalHoje = todoUnits.length + feitoCount;
+  const focoPct = totalHoje > 0 ? Math.round((feitoCount / totalHoje) * 100) : 0;
+
+  // Prioridades: tarefas marcadas que ainda não foram concluídas
+  const priorityTasks = priorities.map((id) => tasks.find((t) => t.id === id)).filter((t) => t && !t.done);
+
   const ws = today0();
   ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7));
   const labels = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
@@ -498,50 +541,77 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
     };
   });
 
-  const dataExt = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
-
   return (
     <div className="space-y-5">
-      <p className="text-sm text-violet-700 capitalize font-medium">{dataExt}</p>
-
       <Dashboard data={data} />
 
-      <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm font-semibold text-slate-700">Carga do dia</span>
-          <span className={`text-sm font-bold ${over ? "text-red-600" : "text-violet-700"}`}>{committed.toFixed(1)}h / {wh}h</span>
+          <span className="text-sm font-semibold text-slate-700">Carga do dia <span className="font-normal text-slate-400">· capacidade ideal {wh}h</span></span>
+          <span className={`text-base font-bold ${over ? "text-red-600" : "text-violet-700"}`}>{committed.toFixed(1)}h / {wh}h</span>
         </div>
         <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
-          <div className={`h-full rounded-full ${over ? "bg-red-500" : "bg-violet-500"}`} style={{ width: `${pct}%` }} />
+          <div className={`h-full rounded-full ${over ? "bg-gradient-to-r from-violet-500 to-red-500" : "bg-gradient-to-r from-violet-500 to-violet-400"}`} style={{ width: `${pct}%` }} />
         </div>
-        {over && <p className="text-xs text-red-600 mt-2 flex items-center gap-1"><AlertTriangle size={13} /> Dia sobrecarregado. Considere renegociar um prazo ou delegar.</p>}
+        {over && <p className="text-xs text-red-600 mt-2 flex items-center gap-1"><AlertTriangle size={13} /> Seu dia está cheio. Que tal renegociar prazos ou delegar algumas tarefas?</p>}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div className="lg:col-span-2">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-base font-semibold text-slate-700 flex items-center gap-2"><CalendarClock size={18} className="text-violet-500" /> Suas tarefas de hoje</h2>
+          </div>
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            <KColumn title="A fazer" count={todoUnits.length} accent="text-violet-700" today>
+              {todoUnits.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada travado para hoje.</p> :
+                todoUnits.map((un) => un.sub
+                  ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.taskId)} />
+                  : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.task.id)} />)}
+            </KColumn>
+            <KColumn title="Em espera" count={esperaT.length} accent="text-slate-500">
+              {esperaT.length === 0 ? <p className="text-xs text-slate-400 px-1">Vazio.</p> :
+                esperaT.map((t) => <Card key={t.id} t={t} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} />)}
+            </KColumn>
+            <KColumn title="Feito hoje" count={feito.length} accent="text-green-600">
+              {feito.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada concluído ainda.</p> :
+                feito.map((it) => it.kind === "task"
+                  ? <Card key={it.t.id} t={it.t} data={data} onToggle={toggleTask} onOpen={onOpen} onSetDoneDate={setDoneDate} stuckDays={sd} />
+                  : <SubtaskCard key={it.sub.id} task={it.task} sub={it.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} onSetSubDoneDate={setSubDoneDate} />)}
+            </KColumn>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-4">
+            <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2 mb-2"><CircleDot size={15} className="text-violet-500" /> Prioridades de hoje</h3>
+            {priorityTasks.length === 0 ? (
+              <p className="text-xs text-slate-400">Marque até 3 tarefas como prioridade na estrela do cartão.</p>
+            ) : (
+              <div className="space-y-2">
+                {priorityTasks.map((t, i) => (
+                  <div key={t.id} className="flex items-start gap-2">
+                    <span className="shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-700 text-xs font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
+                    <button onClick={() => onOpen(t.id)} className="text-sm text-slate-600 text-left hover:text-violet-700 leading-snug">{t.title}</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-gradient-to-br from-violet-500 to-violet-700 rounded-2xl p-4 text-white">
+            <h3 className="text-sm font-semibold flex items-center gap-2 mb-1"><Zap size={15} /> Foco do dia</h3>
+            <p className="text-xs text-violet-100 mb-3">Menos distração, mais direção.</p>
+            <div className="w-full h-2.5 bg-white/25 rounded-full overflow-hidden mb-1">
+              <div className="h-full bg-white rounded-full transition-all" style={{ width: `${focoPct}%` }} />
+            </div>
+            <p className="text-xs text-violet-100">{focoPct}% do dia concluído. {focoPct >= 100 ? "Arrasou! 🚀" : "Vamos juntas! 🚀"}</p>
+          </div>
+        </div>
       </div>
 
       <div>
-        <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5"><CalendarClock size={15} className="text-violet-500" /> Hoje</h2>
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          <KColumn title="A fazer" count={todoUnits.length} accent="text-violet-700" today>
-            {todoUnits.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada travado para hoje.</p> :
-              todoUnits.map((un) => un.sub
-                ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} />
-                : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} />)}
-          </KColumn>
-          <KColumn title="Em espera" count={esperaT.length} accent="text-slate-500">
-            {esperaT.length === 0 ? <p className="text-xs text-slate-400 px-1">Vazio.</p> :
-              esperaT.map((t) => <Card key={t.id} t={t} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} />)}
-          </KColumn>
-          <KColumn title="Feito hoje" count={feito.length} accent="text-green-600">
-            {feito.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada concluído ainda.</p> :
-              feito.map((it) => it.kind === "task"
-                ? <Card key={it.t.id} t={it.t} data={data} onToggle={toggleTask} onOpen={onOpen} onSetDoneDate={setDoneDate} stuckDays={sd} />
-                : <SubtaskCard key={it.sub.id} task={it.task} sub={it.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} onSetSubDoneDate={setSubDoneDate} />)}
-          </KColumn>
-        </div>
-      </div>
-
-      <div>
-        <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
-          <Calendar size={15} className="text-violet-500" /> Semana
+        <h2 className="text-base font-semibold text-slate-700 mb-2 flex items-center gap-2">
+          <Calendar size={18} className="text-violet-500" /> Semana
           <span className="text-xs font-normal text-slate-400">(arraste para o dia que vai fazer)</span>
         </h2>
         <div className="flex gap-3 overflow-x-auto pb-2">
@@ -612,30 +682,34 @@ function Dashboard({ data }) {
   const sufixo = period === "semana" ? "(semana)" : "(mês)";
 
   const boxes = [
-    { label: "Clientes", value: clientes, color: "bg-violet-100 text-violet-800" },
-    { label: "Pendentes", value: pendentes, color: "bg-slate-100 text-slate-700" },
-    { label: `Concluídas ${sufixo}`, value: concluidas, color: "bg-green-100 text-green-800" },
-    { label: "Atrasadas", value: atrasadas, color: "bg-red-100 text-red-800" },
-    { label: "Em espera", value: espera, color: "bg-amber-100 text-amber-800" },
-    { label: `A vencer ${sufixo}`, value: proximas, color: "bg-blue-100 text-blue-800" },
+    { label: "Clientes", sub: "ativos", value: clientes, icon: Users, color: "text-violet-600", bg: "bg-violet-100" },
+    { label: "Pendentes", sub: "no total", value: pendentes, icon: Clock, color: "text-slate-500", bg: "bg-slate-100" },
+    { label: `Concluídas`, sub: sufixo === "(semana)" ? "esta semana" : "este mês", value: concluidas, icon: Check, color: "text-green-600", bg: "bg-green-100" },
+    { label: "Atrasadas", sub: "atenção", value: atrasadas, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-100" },
+    { label: "Em espera", sub: "aguardando", value: espera, icon: PauseCircle, color: "text-amber-600", bg: "bg-amber-100" },
+    { label: `A vencer`, sub: sufixo === "(semana)" ? "esta semana" : "este mês", value: proximas, icon: Calendar, color: "text-blue-600", bg: "bg-blue-100" },
   ];
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-slate-700">Resumo</h2>
+    <div>
+      <div className="flex items-center justify-end mb-3">
         <div className="flex gap-1">
           <button onClick={() => setPeriod("semana")} className={`text-xs px-3 py-1 rounded-full border ${period === "semana" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Semana</button>
           <button onClick={() => setPeriod("mes")} className={`text-xs px-3 py-1 rounded-full border ${period === "mes" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Mês</button>
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-2">
-        {boxes.map((b) => (
-          <div key={b.label} className={`rounded-lg p-2 ${b.color}`}>
-            <p className="text-xl font-bold leading-none">{b.value}</p>
-            <p className="text-xs mt-1 leading-tight">{b.label}</p>
-          </div>
-        ))}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        {boxes.map((b) => {
+          const Icon = b.icon;
+          return (
+            <div key={b.label} className="bg-white rounded-2xl border border-slate-200 p-4">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center mb-2 ${b.bg} ${b.color}`}><Icon size={18} /></div>
+              <p className="text-2xl font-bold leading-none text-slate-800">{b.value}</p>
+              <p className="text-sm font-medium text-slate-600 mt-1">{b.label}</p>
+              <p className="text-xs text-slate-400">{b.sub}</p>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
