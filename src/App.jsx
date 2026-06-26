@@ -1428,7 +1428,7 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
   );
 }
 
-function Agenda({ data, addMeeting, editMeeting, delMeeting }) {
+function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], googleStatus = "idle", googleMsg = "", onConnectGoogle, onDisconnectGoogle }) {
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(TODAY);
   const [start, setStart] = useState("09:00");
@@ -1443,9 +1443,35 @@ function Agenda({ data, addMeeting, editMeeting, delMeeting }) {
 
   const upcoming = [...data.meetings].filter((m) => m.date >= TODAY).sort((a, b) => a.date.localeCompare(b.date) || (a.start || "").localeCompare(b.start || ""));
   const past = [...data.meetings].filter((m) => m.date < TODAY).sort((a, b) => b.date.localeCompare(a.date));
+  const googleUpcoming = [...googleEvents].filter((e) => e.date >= TODAY).sort((a, b) => a.date.localeCompare(b.date) || (a.start || "").localeCompare(b.start || ""));
 
   return (
     <div className="space-y-4">
+      <Section title="Google Agenda" icon={Calendar} action={
+        googleStatus === "connected"
+          ? <button onClick={onDisconnectGoogle} className="text-xs text-slate-400 hover:text-red-500">Desconectar</button>
+          : <button onClick={onConnectGoogle} disabled={googleStatus === "connecting"} className="text-sm bg-blue-600 text-white rounded-lg px-3 py-1.5 font-medium hover:bg-blue-700 disabled:opacity-60">{googleStatus === "connecting" ? "Conectando..." : "Conectar Google Agenda"}</button>
+      }>
+        {googleStatus === "connected" ? (
+          <div>
+            <p className="text-xs text-green-600 mb-2 flex items-center gap-1"><Check size={13} /> Conectado. {googleMsg} Os eventos entram no cálculo de horas do dia.</p>
+            {googleUpcoming.length === 0 ? <p className="text-sm text-slate-400">Nenhum evento nos próximos 30 dias.</p> :
+              googleUpcoming.map((e) => (
+                <div key={e.id} className="flex items-center gap-3 py-1.5 border-b border-slate-100 last:border-0">
+                  <span className="text-xs font-semibold text-blue-700 w-12">{fmtBR(e.date)}</span>
+                  <span className="text-xs font-mono text-slate-500 w-12">{e.allDay ? "dia" : e.start}</span>
+                  <span className="text-sm flex-1">{e.title}</span>
+                  <span className="text-xs text-slate-400">{e.allDay ? "1h" : `${Math.round(e.durationMin)}min`}</span>
+                </div>
+              ))}
+          </div>
+        ) : googleStatus === "error" ? (
+          <p className="text-sm text-red-600">{googleMsg || "Erro ao conectar."} Tente novamente.</p>
+        ) : (
+          <p className="text-sm text-slate-400">Conecte sua agenda do Google para ver os eventos aqui e somá-los no cálculo de horas. Só leitura, próximos 30 dias da agenda principal.</p>
+        )}
+      </Section>
+
       <Section title="Nova reunião" icon={Plus}>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Assunto / com quem"
           className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-2" />
