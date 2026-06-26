@@ -89,6 +89,56 @@ const POST_STATUS = {
 };
 const POST_STATUS_DEFAULT = "em_copy";
 
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+const GOOGLE_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
+const ALLDAY_HOURS = 1;
+
+function loadGoogleScript() {
+  return new Promise((resolve, reject) => {
+    if (window.google && window.google.accounts && window.google.accounts.oauth2) { resolve(); return; }
+    const existing = document.getElementById("gsi-script");
+    if (existing) { existing.addEventListener("load", () => resolve()); return; }
+    const s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.id = "gsi-script";
+    s.async = true; s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Falha ao carregar Google"));
+    document.head.appendChild(s);
+  });
+}
+
+async function fetchGoogleEvents(token) {
+  const now = new Date();
+  const end = new Date(); end.setDate(end.getDate() + 30);
+  const params = new URLSearchParams({
+    timeMin: now.toISOString(),
+    timeMax: end.toISOString(),
+    singleEvents: "true",
+    orderBy: "startTime",
+    maxResults: "250",
+  });
+  const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Erro ao buscar eventos");
+  const json = await res.json();
+  return (json.items || []).map((ev) => {
+    const allDay = !ev.start?.dateTime;
+    let date, start = "", durationMin = ALLDAY_HOURS * 60;
+    if (allDay) {
+      date = ev.start.date;
+    } else {
+      const sd = new Date(ev.start.dateTime);
+      const ed = new Date(ev.end.dateTime);
+      date = toKey(sd);
+      start = `${pad(sd.getHours())}:${pad(sd.getMinutes())}`;
+      durationMin = Math.max(0, Math.round((ed - sd) / 60000));
+    }
+    return { id: `g_${ev.id}`, title: ev.summary || "(sem título)", date, start, durationMin, allDay, google: true };
+  }).filter((e) => e.date);
+}
+
 function collectUnits(tasks) {
   const units = [];
   for (const t of tasks) {
@@ -104,9 +154,10 @@ function collectUnits(tasks) {
   return units;
 }
 
-function buildSchedule(tasks, meetings, workHours) {
+function buildSchedule(tasks, meetings, workHours, googleEvents = []) {
   const meetingHours = {};
   meetings.forEach((m) => { meetingHours[m.date] = (meetingHours[m.date] || 0) + (m.durationMin || 0) / 60; });
+  googleEvents.forEach((e) => { meetingHours[e.date] = (meetingHours[e.date] || 0) + (e.durationMin || 0) / 60; });
   const capOf = (k) => Math.max(0, workHours - (meetingHours[k] || 0));
 
   const units = collectUnits(tasks);
@@ -195,8 +246,35 @@ function Painel({ session }) {
   const [tab, setTab] = useState("hoje");
   const [showSettings, setShowSettings] = useState(false);
   const [detailId, setDetailId] = useState(null);
+  const [googleEvents, setGoogleEvents] = useState([]);
+  const [googleStatus, setGoogleStatus] = useState("idle"); // idle | connecting | connected | error
+  const [googleMsg, setGoogleMsg] = useState("");
+  const tokenClientRef = useRef(null);
   const loaded = useRef(false);
   const saveTimer = useRef(null);
+
+  const connectGoogle = async () => {
+    if (!GOOGLE_CLIENT_ID) { setGoogleStatus("error"); setGoogleMsg("Client ID do Google não configurado."); return; }
+    setGoogleStatus("connecting"); setGoogleMsg("");
+    try {
+      await loadGoogleScript();
+      tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: GOOGLE_SCOPE,
+        callback: async (resp) => {
+          if (resp.error) { setGoogleStatus("error"); setGoogleMsg("Permissão negada ou cancelada."); return; }
+          try {
+            const events = await fetchGoogleEvents(resp.access_token);
+            setGoogleEvents(events);
+            setGoogleStatus("connected");
+            setGoogleMsg(`${events.length} eventos carregados.`);
+          } catch (e) { setGoogleStatus("error"); setGoogleMsg("Erro ao buscar eventos da agenda."); }
+        },
+      });
+      tokenClientRef.current.requestAccessToken();
+    } catch (e) { setGoogleStatus("error"); setGoogleMsg("Não foi possível carregar o Google."); }
+  };
+  const disconnectGoogle = () => { setGoogleEvents([]); setGoogleStatus("idle"); setGoogleMsg(""); };
 
   useEffect(() => {
     (async () => {
@@ -226,7 +304,7 @@ function Painel({ session }) {
 
   const logout = () => supabase.auth.signOut();
 
-  const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours), [data]);
+  const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours, googleEvents), [data, googleEvents]);
 
   const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, externalOwner: false, ownerName: "", ...t }] }));
   const editTask = (id, patch) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
@@ -307,8 +385,8 @@ function Painel({ session }) {
               </div>
             </header>
 
-            {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} />}
-            {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} />}
+            {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} googleEvents={googleEvents} />}
+            {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} />}
             {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
             {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} />}
             {["acohub", "novello", "pessoal", "freela"].includes(tab) && (
@@ -469,7 +547,7 @@ function KColumn({ title, count, accent, today, hours, over, onDragOver, onDrop,
   );
 }
 
-function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority }) {
+function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority, googleEvents = [] }) {
   const wh = data.settings.workHours;
   const sd = data.settings.stuckDays;
   const tasks = data.tasks;
@@ -532,11 +610,13 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
   const week = labels.map((lb, i) => {
     const d = new Date(ws); d.setDate(ws.getDate() + i);
     const key = toKey(d);
+    const internas = data.meetings.filter((m) => m.date === key);
+    const gees = googleEvents.filter((e) => e.date === key);
     return {
       key, label: lb, num: d.getDate(),
       tasks: tasks.filter((t) => !t.done && dayOf(t) === key).sort((a, b) => URG[b.urgency].rank - URG[a.urgency].rank),
       subs: tasks.flatMap((t) => (t.subtasks || []).filter((s) => !s.done && dayOf(s) === key).map((s) => ({ task: t, sub: s }))),
-      meetings: data.meetings.filter((m) => m.date === key).sort((a, b) => (a.start || "").localeCompare(b.start || "")),
+      meetings: [...internas, ...gees].sort((a, b) => (a.start || "").localeCompare(b.start || "")),
     };
   });
 
@@ -713,13 +793,14 @@ function Dashboard({ data }) {
 }
 
 function MeetingCard({ m }) {
+  const isGoogle = m.google;
   return (
-    <div className="bg-violet-100 rounded-lg border border-violet-200 p-2 mb-2">
-      <div className="flex items-center gap-1 text-violet-800">
-        <Calendar size={12} /><span className="text-xs font-mono font-semibold">{m.start || "--:--"}</span>
-        <span className="text-xs text-violet-500 ml-auto">{Math.round(m.durationMin)}min</span>
+    <div className={`rounded-lg border p-2 mb-2 ${isGoogle ? "bg-blue-50 border-blue-200" : "bg-violet-100 border-violet-200"}`}>
+      <div className={`flex items-center gap-1 ${isGoogle ? "text-blue-800" : "text-violet-800"}`}>
+        <Calendar size={12} /><span className="text-xs font-mono font-semibold">{m.allDay ? "dia" : (m.start || "--:--")}</span>
+        <span className={`text-xs ml-auto ${isGoogle ? "text-blue-500" : "text-violet-500"}`}>{m.allDay ? "Google" : `${Math.round(m.durationMin)}min`}</span>
       </div>
-      <p className="text-sm text-violet-900 mt-0.5">{m.title}</p>
+      <p className={`text-sm mt-0.5 ${isGoogle ? "text-blue-900" : "text-violet-900"}`}>{m.title}{isGoogle && !m.allDay && <span className="text-xs text-blue-400 ml-1">· Google</span>}</p>
     </div>
   );
 }
