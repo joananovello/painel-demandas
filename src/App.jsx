@@ -558,6 +558,8 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
   const capForDay = (k) => Math.max(0, wh - (sched.meetingHours[k] || 0));
 
   const dragRef = useRef(null);
+  const [showProxima, setShowProxima] = useState(false);
+  const [showMes, setShowMes] = useState(false);
   const startDrag = (e, kind, taskId, subId) => {
     dragRef.current = { kind, taskId, subId };
     try { e.dataTransfer.setData("text/plain", "drag"); e.dataTransfer.effectAllowed = "move"; } catch (_) {}
@@ -600,6 +602,9 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
 
   // Prioridades: tarefas marcadas que ainda não foram concluídas
   const priorityTasks = priorities.map((id) => tasks.find((t) => t.id === id)).filter((t) => t && !t.done);
+
+  const diaSemana = new Date().getDay(); // 0=dom, 5=sex, 6=sáb
+  const ehFimDeSemana = diaSemana === 5 || diaSemana === 6 || diaSemana === 0;
 
   const ws = today0();
   ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7));
@@ -732,6 +737,138 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
             );
           })}
         </div>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <button onClick={() => setShowProxima(!showProxima)} className={`w-full flex items-center justify-between rounded-xl px-4 py-3 border text-sm font-semibold transition-colors ${ehFimDeSemana ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-700 border-slate-200 hover:bg-violet-50"}`}>
+            <span className="flex items-center gap-2"><Calendar size={16} /> {ehFimDeSemana ? "Hora de planejar! Ver próxima semana" : "Ver próxima semana"}</span>
+            <span>{showProxima ? "−" : "+"}</span>
+          </button>
+          {showProxima && <div className="mt-2"><ProximaSemana data={data} sched={sched} googleEvents={googleEvents} onOpen={onOpen} /></div>}
+        </div>
+
+        <div>
+          <button onClick={() => setShowMes(!showMes)} className="w-full flex items-center justify-between rounded-xl px-4 py-3 border bg-white text-slate-700 border-slate-200 hover:bg-violet-50 text-sm font-semibold transition-colors">
+            <span className="flex items-center gap-2"><CalendarClock size={16} /> Ver mês</span>
+            <span>{showMes ? "−" : "+"}</span>
+          </button>
+          {showMes && <div className="mt-2"><CalendarioMes data={data} sched={sched} googleEvents={googleEvents} /></div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProximaSemana({ data, sched, googleEvents, onOpen }) {
+  const ws = today0();
+  ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7) + 7); // segunda da próxima semana
+  const labels = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+  const wh = data.settings.workHours;
+  const tasks = data.tasks;
+  const dayOf = (x) => x.workDate || x.deadline;
+
+  const dias = labels.map((lb, i) => {
+    const d = new Date(ws); d.setDate(ws.getDate() + i);
+    const key = toKey(d);
+    const dTasks = tasks.filter((t) => !t.done && dayOf(t) === key);
+    const dSubs = tasks.flatMap((t) => (t.subtasks || []).filter((s) => !s.done && dayOf(s) === key).map((s) => ({ task: t, sub: s })));
+    const meets = [...data.meetings.filter((m) => m.date === key), ...(googleEvents || []).filter((e) => e.date === key)];
+    const horas = (sched.perDayHours[key] || 0) + (sched.meetingHours[key] || 0);
+    return { key, label: lb, num: d.getDate(), dTasks, dSubs, meets, horas };
+  });
+
+  const totalItens = dias.reduce((n, d) => n + d.dTasks.length + d.dSubs.length + d.meets.length, 0);
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      {totalItens === 0 ? (
+        <p className="text-sm text-slate-400">Nada agendado para a próxima semana ainda. Semana livre para planejar! 🎉</p>
+      ) : (
+        <div className="space-y-2">
+          {dias.map((d) => {
+            const vazio = d.dTasks.length === 0 && d.dSubs.length === 0 && d.meets.length === 0;
+            if (vazio) return null;
+            const over = d.horas > wh + 0.01;
+            return (
+              <div key={d.key} className="border border-slate-100 rounded-xl p-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-semibold text-slate-700">{d.label} {d.num}</span>
+                  {d.horas > 0 && <span className={`text-xs font-semibold ${over ? "text-red-600" : "text-violet-700"}`}>{d.horas.toFixed(1)}h{over ? " · cheio" : ""}</span>}
+                </div>
+                {d.meets.map((m, i) => (
+                  <p key={`m${i}`} className="text-xs text-blue-600 flex items-center gap-1"><Calendar size={11} />{m.allDay ? "dia" : (m.start || "")} {m.title}</p>
+                ))}
+                {d.dTasks.map((t) => (
+                  <p key={t.id} onClick={() => onOpen(t.id)} className="text-xs text-slate-600 cursor-pointer hover:text-violet-700 flex items-center gap-1"><span className={`w-1.5 h-1.5 rounded-full ${URG[t.urgency].dot}`} />{t.title}</p>
+                ))}
+                {d.dSubs.map(({ task, sub }) => (
+                  <p key={sub.id} onClick={() => onOpen(task.id)} className="text-xs text-slate-500 cursor-pointer hover:text-violet-700 flex items-center gap-1"><ListChecks size={10} className="text-violet-400" />{sub.title}</p>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CalendarioMes({ data, sched, googleEvents }) {
+  const [offset, setOffset] = useState(0);
+  const base = fromKey(TODAY);
+  const ref = new Date(base.getFullYear(), base.getMonth() + offset, 1);
+  const ano = ref.getFullYear(), mes = ref.getMonth();
+  const wh = data.settings.workHours;
+  const tasks = data.tasks;
+  const dayOf = (x) => x.workDate || x.deadline;
+
+  const primeiroDia = new Date(ano, mes, 1);
+  const startOffset = (primeiroDia.getDay() + 6) % 7; // segunda = 0
+  const diasNoMes = new Date(ano, mes + 1, 0).getDate();
+  const celulas = [];
+  for (let i = 0; i < startOffset; i++) celulas.push(null);
+  for (let d = 1; d <= diasNoMes; d++) celulas.push(new Date(ano, mes, d));
+  while (celulas.length % 7 !== 0) celulas.push(null);
+
+  const labels = ["S", "T", "Q", "Q", "S", "S", "D"];
+  const mesLabel = ref.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <button onClick={() => setOffset(offset - 1)} className="text-slate-400 hover:text-violet-600 text-sm px-2">‹</button>
+        <span className="text-sm font-semibold text-slate-700 capitalize">{mesLabel}</span>
+        <button onClick={() => setOffset(offset + 1)} className="text-slate-400 hover:text-violet-600 text-sm px-2">›</button>
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {labels.map((l, i) => <div key={i} className="text-center text-xs font-semibold text-slate-400 pb-1">{l}</div>)}
+        {celulas.map((cel, i) => {
+          if (!cel) return <div key={i} />;
+          const key = toKey(cel);
+          const isToday = key === TODAY;
+          const nTasks = tasks.filter((t) => !t.done && dayOf(t) === key).length + tasks.reduce((n, t) => n + (t.subtasks || []).filter((s) => !s.done && dayOf(s) === key).length, 0);
+          const nMeets = data.meetings.filter((m) => m.date === key).length + (googleEvents || []).filter((e) => e.date === key).length;
+          const horas = (sched.perDayHours[key] || 0) + (sched.meetingHours[key] || 0);
+          const over = horas > wh + 0.01;
+          return (
+            <div key={i} className={`min-h-[58px] rounded-lg border p-1 ${isToday ? "border-violet-400 bg-violet-50" : "border-slate-100"}`}>
+              <div className="flex items-center justify-between">
+                <span className={`text-xs ${isToday ? "font-bold text-violet-700" : "text-slate-500"}`}>{cel.getDate()}</span>
+                {horas > 0 && <span className={`text-[10px] font-semibold ${over ? "text-red-600" : "text-violet-600"}`}>{horas.toFixed(0)}h</span>}
+              </div>
+              <div className="flex flex-wrap gap-0.5 mt-0.5">
+                {nMeets > 0 && <span className="flex items-center gap-0.5 text-[10px] text-blue-600"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" />{nMeets}</span>}
+                {nTasks > 0 && <span className="flex items-center gap-0.5 text-[10px] text-violet-600"><span className="w-1.5 h-1.5 rounded-full bg-violet-500" />{nTasks}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex gap-3 mt-2 text-[10px] text-slate-400">
+        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> reuniões</span>
+        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-violet-500" /> demandas</span>
+        <span className="flex items-center gap-1"><span className="text-violet-600 font-semibold">Xh</span> carga prevista</span>
       </div>
     </div>
   );
