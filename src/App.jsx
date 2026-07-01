@@ -154,10 +154,9 @@ function collectUnits(tasks) {
   return units;
 }
 
-function buildSchedule(tasks, meetings, workHours, googleEvents = []) {
+function buildSchedule(tasks, meetings, workHours) {
   const meetingHours = {};
   meetings.forEach((m) => { meetingHours[m.date] = (meetingHours[m.date] || 0) + (m.durationMin || 0) / 60; });
-  googleEvents.forEach((e) => { meetingHours[e.date] = (meetingHours[e.date] || 0) + (e.durationMin || 0) / 60; });
   const capOf = (k) => Math.max(0, workHours - (meetingHours[k] || 0));
 
   const units = collectUnits(tasks);
@@ -276,6 +275,27 @@ function Painel({ session }) {
   };
   const disconnectGoogle = () => { setGoogleEvents([]); setGoogleStatus("idle"); setGoogleMsg(""); };
 
+  const importGoogleEvents = () => {
+    if (!googleEvents.length) return;
+    setData((d) => {
+      const meetings = [...d.meetings];
+      let novos = 0, atualizados = 0;
+      for (const ev of googleEvents) {
+        const idx = meetings.findIndex((m) => m.googleId === ev.id);
+        const payload = { title: ev.title, date: ev.date, start: ev.start, durationMin: ev.durationMin, googleId: ev.id, allDay: ev.allDay };
+        if (idx === -1) { meetings.push({ id: uid(), ...payload }); novos++; }
+        else {
+          const cur = meetings[idx];
+          if (cur.title !== ev.title || cur.date !== ev.date || cur.start !== ev.start || cur.durationMin !== ev.durationMin) {
+            meetings[idx] = { ...cur, ...payload }; atualizados++;
+          }
+        }
+      }
+      setGoogleMsg(`Importados: ${novos} novos, ${atualizados} atualizados.`);
+      return { ...d, meetings };
+    });
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -304,7 +324,7 @@ function Painel({ session }) {
 
   const logout = () => supabase.auth.signOut();
 
-  const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours, googleEvents), [data, googleEvents]);
+  const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours), [data]);
 
   const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, externalOwner: false, ownerName: "", ...t }] }));
   const editTask = (id, patch) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
@@ -385,8 +405,8 @@ function Painel({ session }) {
               </div>
             </header>
 
-            {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} googleEvents={googleEvents} />}
-            {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} />}
+            {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} />}
+            {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} />}
             {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
             {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} />}
             {["acohub", "novello", "pessoal", "freela"].includes(tab) && (
@@ -547,7 +567,7 @@ function KColumn({ title, count, accent, today, hours, over, onDragOver, onDrop,
   );
 }
 
-function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority, googleEvents = [] }) {
+function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority }) {
   const wh = data.settings.workHours;
   const sd = data.settings.stuckDays;
   const tasks = data.tasks;
@@ -615,13 +635,11 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
   const week = labels.map((lb, i) => {
     const d = new Date(ws); d.setDate(ws.getDate() + i);
     const key = toKey(d);
-    const internas = data.meetings.filter((m) => m.date === key);
-    const gees = googleEvents.filter((e) => e.date === key);
     return {
       key, label: lb, num: d.getDate(),
       tasks: tasks.filter((t) => !t.done && dayOf(t) === key).sort((a, b) => URG[b.urgency].rank - URG[a.urgency].rank),
       subs: tasks.flatMap((t) => (t.subtasks || []).filter((s) => !s.done && dayOf(s) === key).map((s) => ({ task: t, sub: s }))),
-      meetings: [...internas, ...gees].sort((a, b) => (a.start || "").localeCompare(b.start || "")),
+      meetings: data.meetings.filter((m) => m.date === key).sort((a, b) => (a.start || "").localeCompare(b.start || "")),
     };
   });
 
@@ -745,7 +763,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
             <span className="flex items-center gap-2"><Calendar size={16} /> {ehFimDeSemana ? "Hora de planejar! Ver próxima semana" : "Ver próxima semana"}</span>
             <span>{showProxima ? "−" : "+"}</span>
           </button>
-          {showProxima && <div className="mt-2"><ProximaSemana data={data} sched={sched} googleEvents={googleEvents} onOpen={onOpen} /></div>}
+          {showProxima && <div className="mt-2"><ProximaSemana data={data} sched={sched} onOpen={onOpen} /></div>}
         </div>
 
         <div>
@@ -753,14 +771,14 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
             <span className="flex items-center gap-2"><CalendarClock size={16} /> Ver mês</span>
             <span>{showMes ? "−" : "+"}</span>
           </button>
-          {showMes && <div className="mt-2"><CalendarioMes data={data} sched={sched} googleEvents={googleEvents} /></div>}
+          {showMes && <div className="mt-2"><CalendarioMes data={data} sched={sched} /></div>}
         </div>
       </div>
     </div>
   );
 }
 
-function ProximaSemana({ data, sched, googleEvents, onOpen }) {
+function ProximaSemana({ data, sched, onOpen }) {
   const ws = today0();
   ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7) + 7); // segunda da próxima semana
   const labels = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
@@ -773,7 +791,7 @@ function ProximaSemana({ data, sched, googleEvents, onOpen }) {
     const key = toKey(d);
     const dTasks = tasks.filter((t) => !t.done && dayOf(t) === key);
     const dSubs = tasks.flatMap((t) => (t.subtasks || []).filter((s) => !s.done && dayOf(s) === key).map((s) => ({ task: t, sub: s })));
-    const meets = [...data.meetings.filter((m) => m.date === key), ...(googleEvents || []).filter((e) => e.date === key)];
+    const meets = data.meetings.filter((m) => m.date === key);
     const horas = (sched.perDayHours[key] || 0) + (sched.meetingHours[key] || 0);
     return { key, label: lb, num: d.getDate(), dTasks, dSubs, meets, horas };
   });
@@ -814,7 +832,7 @@ function ProximaSemana({ data, sched, googleEvents, onOpen }) {
   );
 }
 
-function CalendarioMes({ data, sched, googleEvents }) {
+function CalendarioMes({ data, sched }) {
   const [offset, setOffset] = useState(0);
   const base = fromKey(TODAY);
   const ref = new Date(base.getFullYear(), base.getMonth() + offset, 1);
@@ -848,7 +866,7 @@ function CalendarioMes({ data, sched, googleEvents }) {
           const key = toKey(cel);
           const isToday = key === TODAY;
           const nTasks = tasks.filter((t) => !t.done && dayOf(t) === key).length + tasks.reduce((n, t) => n + (t.subtasks || []).filter((s) => !s.done && dayOf(s) === key).length, 0);
-          const nMeets = data.meetings.filter((m) => m.date === key).length + (googleEvents || []).filter((e) => e.date === key).length;
+          const nMeets = data.meetings.filter((m) => m.date === key).length;
           const horas = (sched.perDayHours[key] || 0) + (sched.meetingHours[key] || 0);
           const over = horas > wh + 0.01;
           return (
@@ -1565,7 +1583,7 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
   );
 }
 
-function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], googleStatus = "idle", googleMsg = "", onConnectGoogle, onDisconnectGoogle }) {
+function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], googleStatus = "idle", googleMsg = "", onConnectGoogle, onDisconnectGoogle, onImportGoogle }) {
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(TODAY);
   const [start, setStart] = useState("09:00");
@@ -1581,23 +1599,28 @@ function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], 
   const upcoming = [...data.meetings].filter((m) => m.date >= TODAY).sort((a, b) => a.date.localeCompare(b.date) || (a.start || "").localeCompare(b.start || ""));
   const past = [...data.meetings].filter((m) => m.date < TODAY).sort((a, b) => b.date.localeCompare(a.date));
   const googleUpcoming = [...googleEvents].filter((e) => e.date >= TODAY).sort((a, b) => a.date.localeCompare(b.date) || (a.start || "").localeCompare(b.start || ""));
+  const jaImportados = new Set(data.meetings.map((m) => m.googleId).filter(Boolean));
 
   return (
     <div className="space-y-4">
       <Section title="Google Agenda" icon={Calendar} action={
         googleStatus === "connected"
-          ? <button onClick={onDisconnectGoogle} className="text-xs text-slate-400 hover:text-red-500">Desconectar</button>
+          ? <div className="flex gap-2 items-center">
+              <button onClick={onImportGoogle} className="text-sm bg-violet-600 text-white rounded-lg px-3 py-1.5 font-medium hover:bg-violet-700">Importar / atualizar</button>
+              <button onClick={onDisconnectGoogle} className="text-xs text-slate-400 hover:text-red-500">Desconectar</button>
+            </div>
           : <button onClick={onConnectGoogle} disabled={googleStatus === "connecting"} className="text-sm bg-blue-600 text-white rounded-lg px-3 py-1.5 font-medium hover:bg-blue-700 disabled:opacity-60">{googleStatus === "connecting" ? "Conectando..." : "Conectar Google Agenda"}</button>
       }>
         {googleStatus === "connected" ? (
           <div>
-            <p className="text-xs text-green-600 mb-2 flex items-center gap-1"><Check size={13} /> Conectado. {googleMsg} Os eventos entram no cálculo de horas do dia.</p>
+            <p className="text-xs text-slate-500 mb-2">Prévia dos eventos do Google (próximos 30 dias). Clique em "Importar / atualizar" para copiá-los para a sua agenda interna, onde ficam salvos e entram no cálculo de horas. {googleMsg && <span className="text-violet-600 font-medium">{googleMsg}</span>}</p>
             {googleUpcoming.length === 0 ? <p className="text-sm text-slate-400">Nenhum evento nos próximos 30 dias.</p> :
               googleUpcoming.map((e) => (
                 <div key={e.id} className="flex items-center gap-3 py-1.5 border-b border-slate-100 last:border-0">
                   <span className="text-xs font-semibold text-blue-700 w-12">{fmtBR(e.date)}</span>
                   <span className="text-xs font-mono text-slate-500 w-12">{e.allDay ? "dia" : e.start}</span>
                   <span className="text-sm flex-1">{e.title}</span>
+                  {jaImportados.has(e.id) ? <span className="text-xs text-green-600 flex items-center gap-0.5"><Check size={11} /> importado</span> : <span className="text-xs text-slate-300">novo</span>}
                   <span className="text-xs text-slate-400">{e.allDay ? "1h" : `${Math.round(e.durationMin)}min`}</span>
                 </div>
               ))}
@@ -1605,7 +1628,7 @@ function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], 
         ) : googleStatus === "error" ? (
           <p className="text-sm text-red-600">{googleMsg || "Erro ao conectar."} Tente novamente.</p>
         ) : (
-          <p className="text-sm text-slate-400">Conecte sua agenda do Google para ver os eventos aqui e somá-los no cálculo de horas. Só leitura, próximos 30 dias da agenda principal.</p>
+          <p className="text-sm text-slate-400">Conecte sua agenda do Google e importe os eventos para dentro do painel. Uma vez importados, eles ficam salvos e contam no cálculo de horas, mesmo depois que a conexão do Google expirar. Só leitura, próximos 30 dias da agenda principal.</p>
         )}
       </Section>
 
@@ -1639,7 +1662,7 @@ function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], 
             <div key={m.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
               <span className="text-xs font-semibold text-violet-700 w-12">{fmtBR(m.date)}</span>
               <span className="text-sm font-mono text-slate-600 w-12">{m.start}</span>
-              <span className="text-sm flex-1">{m.title}</span>
+              <span className="text-sm flex-1">{m.title}{m.googleId && <span className="text-xs text-blue-400 ml-1">· Google</span>}</span>
               <span className="text-xs text-slate-400">{Math.round(m.durationMin)}min</span>
               <button onClick={() => setEditId(m.id)} className="text-slate-300 hover:text-violet-600"><Pencil size={14} /></button>
               <button onClick={() => delMeeting(m.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={15} /></button>
