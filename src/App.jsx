@@ -822,7 +822,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
 
   return (
     <div className="space-y-5">
-      <Dashboard data={data} />
+      <Dashboard data={data} sched={sched} onOpen={onOpen} onGoClient={onGoClient} />
 
       <div className="bg-white rounded-2xl border border-slate-200 p-5">
         <div className="flex items-center justify-between mb-2">
@@ -1074,8 +1074,9 @@ function CalendarioMes({ data, sched }) {
   );
 }
 
-function Dashboard({ data }) {
+function Dashboard({ data, sched, onOpen, onGoClient }) {
   const [period, setPeriod] = useState("semana");
+  const [openBox, setOpenBox] = useState(null);
   const ws = today0();
   ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7));
   const we = new Date(ws); we.setDate(ws.getDate() + 6);
@@ -1088,21 +1089,26 @@ function Dashboard({ data }) {
 
   const tasks = data.tasks;
   const clientes = data.clients.length;
-  const pendentes = tasks.filter((t) => !t.done && t.status !== "espera").length;
+  const listPendentes = tasks.filter((t) => !t.done && t.status !== "espera");
+  const listAtrasadas = tasks.filter((t) => !t.done && t.deadline && t.deadline < TODAY);
+  const listEspera = tasks.filter((t) => !t.done && t.status === "espera");
+  const listProximas = tasks.filter((t) => !t.done && t.deadline && t.deadline >= TODAY && t.deadline <= periodEnd);
   const concluidas = tasks.filter((t) => t.done && inPeriod(t.doneDate)).length + tasks.reduce((n, t) => n + (t.subtasks || []).filter((s) => s.done && inPeriod(s.doneDate)).length, 0);
-  const atrasadas = tasks.filter((t) => !t.done && t.deadline && t.deadline < TODAY).length;
-  const espera = tasks.filter((t) => !t.done && t.status === "espera").length;
-  const proximas = tasks.filter((t) => !t.done && t.deadline && t.deadline >= TODAY && t.deadline <= periodEnd).length;
-  const sufixo = period === "semana" ? "(semana)" : "(mês)";
+
+  // Posts atrasados também entram na lista de atrasadas
+  const postsAtrasados = (sched?.units || []).filter((u) => u.kind === "post" && u.deadline && u.deadline < TODAY);
+  const sufixo = period === "semana" ? "esta semana" : "este mês";
 
   const boxes = [
-    { label: "Clientes", sub: "ativos", value: clientes, icon: Users, color: "text-violet-600", bg: "bg-violet-100" },
-    { label: "Pendentes", sub: "no total", value: pendentes, icon: Clock, color: "text-slate-500", bg: "bg-slate-100" },
-    { label: `Concluídas`, sub: sufixo === "(semana)" ? "esta semana" : "este mês", value: concluidas, icon: Check, color: "text-green-600", bg: "bg-green-100" },
-    { label: "Atrasadas", sub: "atenção", value: atrasadas, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-100" },
-    { label: "Em espera", sub: "aguardando", value: espera, icon: PauseCircle, color: "text-amber-600", bg: "bg-amber-100" },
-    { label: `A vencer`, sub: sufixo === "(semana)" ? "esta semana" : "este mês", value: proximas, icon: Calendar, color: "text-blue-600", bg: "bg-blue-100" },
+    { key: "clientes", label: "Clientes", sub: "ativos", value: clientes, icon: Users, color: "text-violet-600", bg: "bg-violet-100", nav: true },
+    { key: "pendentes", label: "Pendentes", sub: "no total", value: listPendentes.length, icon: Clock, color: "text-slate-500", bg: "bg-slate-100", list: listPendentes },
+    { key: "concluidas", label: "Concluídas", sub: sufixo, value: concluidas, icon: Check, color: "text-green-600", bg: "bg-green-100" },
+    { key: "atrasadas", label: "Atrasadas", sub: "atenção", value: listAtrasadas.length + postsAtrasados.length, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-100", list: listAtrasadas, posts: postsAtrasados },
+    { key: "espera", label: "Em espera", sub: "aguardando", value: listEspera.length, icon: PauseCircle, color: "text-amber-600", bg: "bg-amber-100", list: listEspera },
+    { key: "vencer", label: "A vencer", sub: sufixo, value: listProximas.length, icon: Calendar, color: "text-blue-600", bg: "bg-blue-100", list: listProximas },
   ];
+
+  const ativa = boxes.find((b) => b.key === openBox);
 
   return (
     <div>
@@ -1115,16 +1121,53 @@ function Dashboard({ data }) {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {boxes.map((b) => {
           const Icon = b.icon;
+          const clicavel = b.nav || (b.list && b.list.length > 0) || (b.posts && b.posts.length > 0);
+          const aberto = openBox === b.key;
           return (
-            <div key={b.label} className="bg-white rounded-2xl border border-slate-200 p-4">
+            <button
+              key={b.key}
+              onClick={() => { if (b.nav) onGoClient(); else if (clicavel) setOpenBox(aberto ? null : b.key); }}
+              disabled={!clicavel}
+              className={`text-left bg-white rounded-2xl border p-4 transition-all ${aberto ? "border-violet-400 ring-2 ring-violet-100" : "border-slate-200"} ${clicavel ? "hover:border-violet-300 cursor-pointer" : "cursor-default"}`}
+            >
               <div className={`w-9 h-9 rounded-xl flex items-center justify-center mb-2 ${b.bg} ${b.color}`}><Icon size={18} /></div>
               <p className="text-2xl font-bold leading-none text-slate-800">{b.value}</p>
               <p className="text-sm font-medium text-slate-600 mt-1">{b.label}</p>
               <p className="text-xs text-slate-400">{b.sub}</p>
-            </div>
+            </button>
           );
         })}
       </div>
+
+      {ativa && (ativa.list?.length > 0 || ativa.posts?.length > 0) && (
+        <div className="mt-3 bg-white rounded-2xl border border-violet-200 p-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-semibold text-slate-700">{ativa.label}</p>
+            <button onClick={() => setOpenBox(null)} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+          </div>
+          {(ativa.list || []).map((t) => {
+            const cli = t.clientId ? data.clients.find((c) => c.id === t.clientId) : null;
+            const tag = t.area === "cliente" ? (cli ? cli.name : "Cliente") : AREAS[t.area].label;
+            const atrasada = t.deadline && t.deadline < TODAY;
+            return (
+              <div key={t.id} onClick={() => onOpen(t.id)} className="flex items-center gap-2 py-1.5 border-b border-slate-100 last:border-0 cursor-pointer hover:bg-violet-50 rounded px-1">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${URG[t.urgency].dot}`} />
+                <span className="text-sm flex-1 truncate">{t.title}</span>
+                <span className="text-xs text-slate-400">{tag}</span>
+                {t.deadline && <span className={`text-xs ${atrasada ? "text-red-600 font-medium" : "text-slate-400"}`}>{fmtBR(t.deadline)}</span>}
+              </div>
+            );
+          })}
+          {(ativa.posts || []).map((u) => (
+            <div key={u.id} onClick={() => onGoClient()} className="flex items-center gap-2 py-1.5 border-b border-slate-100 last:border-0 cursor-pointer hover:bg-pink-50 rounded px-1">
+              <span className="w-2 h-2 rounded-full shrink-0 bg-pink-400" />
+              <span className="text-sm flex-1 truncate">{u.post.desc || "(sem descrição)"}</span>
+              <span className="text-xs text-slate-400">{u.clientName} • {u.post.tipo}</span>
+              <span className="text-xs text-red-600 font-medium">{fmtBR(u.deadline)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1405,6 +1448,40 @@ function TaskDetail({ task, data, onEdit, onDelete, onClose }) {
           <button onClick={() => onDelete(t.id)} className="text-sm text-red-500 flex items-center gap-1 hover:text-red-700"><Trash2 size={14} /> Excluir demanda</button>
           <button onClick={onClose} className="bg-violet-600 text-white rounded-lg px-4 py-2 text-sm font-medium">Concluir edição</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ModeloSocialBox({ client, addTask, updateClient }) {
+  const [nome, setNome] = useState("");
+  const criar = () => {
+    const nomeMes = nome.trim() || cap(new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" }));
+    const base = fromKey(TODAY);
+    const ano = base.getFullYear(), mes = base.getMonth();
+    const inicio = toKey(new Date(ano, mes, 1));
+    const fim = toKey(new Date(ano, mes + 1, 0));
+    const taskId = uid();
+    addTask({
+      id: taskId, title: `Social media ${nomeMes}`, area: "cliente", clientId: client.id,
+      scope: "mes", deadline: fim, estTime: 0, urgency: "media", recurrence: "none",
+      subtasks: [
+        { id: uid(), title: "Planejamento do mês", deadline: inicio, estTime: 3, week: 1, done: false, workDate: null, externalOwner: false, ownerName: "" },
+        { id: uid(), title: "Análise de dados do mês", deadline: fim, estTime: 2, week: 5, done: false, workDate: null, externalOwner: false, ownerName: "" },
+      ],
+    });
+    updateClient(client.id, {
+      socialMonths: [...(client.socialMonths || []), { id: uid(), name: nomeMes, taskId, done: false, posts: [] }],
+    });
+    setNome("");
+  };
+  return (
+    <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 mb-3">
+      <p className="text-xs text-violet-800 font-semibold mb-1">Modelo de social media</p>
+      <p className="text-xs text-slate-500 mb-2">Cria a demanda do mês com as subtarefas de planejamento e análise de dados, e já abre o fluxo de posts vinculado. As horas de produção vêm dos posts, conforme o estágio de cada um.</p>
+      <div className="flex gap-2 items-center">
+        <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Nome do mês (ex: Julho 2026)" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
+        <button onClick={criar} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap">Criar mês completo</button>
       </div>
     </div>
   );
