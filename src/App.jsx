@@ -1613,7 +1613,8 @@ function PostsView({ client, updateClient, clientTasks }) {
           <button
             onClick={() => {
               const nome = newMonthName.trim() || cap(new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" }));
-              if (onCriarModeloSocial) onCriarModeloSocial(client.id, nome, TODAY);
+              if (typeof onCriarModeloSocial !== "function") { alert("Erro: a função de criar o modelo não chegou até aqui (onCriarModeloSocial indefinida)."); return; }
+              onCriarModeloSocial(client.id, nome, TODAY);
               setNewMonthName("");
             }}
             className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap">Criar mês completo</button>
