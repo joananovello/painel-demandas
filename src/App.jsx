@@ -1610,7 +1610,13 @@ function PostsView({ client, updateClient, clientTasks }) {
         <p className="text-xs text-slate-500 mb-2">Cria a demanda do mês com as subtarefas de planejamento e análise de dados, e já abre o fluxo de posts vinculado. As horas de produção vêm dos posts, conforme o estágio de cada um.</p>
         <div className="flex gap-2 items-center">
           <input value={newMonthName} onChange={(e) => setNewMonthName(e.target.value)} placeholder="Nome do mês (ex: Julho 2026)" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
-          <button onClick={criarModelo} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap">Criar mês completo</button>
+          <button
+            onClick={() => {
+              const nome = newMonthName.trim() || cap(new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" }));
+              if (onCriarModeloSocial) onCriarModeloSocial(client.id, nome, TODAY);
+              setNewMonthName("");
+            }}
+            className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap">Criar mês completo</button>
           <button onClick={addMonth} title="Criar só o mês de posts, sem demanda" className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-sm whitespace-nowrap">Só posts</button>
         </div>
       </div>
