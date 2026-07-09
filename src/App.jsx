@@ -89,6 +89,56 @@ const POST_STATUS = {
 };
 const POST_STATUS_DEFAULT = "em_copy";
 
+// Interpreta uma linha colada: extrai data (dd/mm ou dd/mm/aaaa), tipo (se houver) e descrição.
+// Aceita separadores: | , TAB, ou a data solta no início da linha.
+function parsePostLine(raw) {
+  let linha = raw.trim();
+  if (!linha) return null;
+
+  // Quebra por | ou TAB, se houver
+  let partes = linha.includes("|") ? linha.split("|") : (linha.includes("\t") ? linha.split("\t") : null);
+  if (partes) partes = partes.map((p) => p.trim()).filter((p) => p.length > 0);
+
+  let dateStr = "", resto = "";
+  const reData = /^(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?$/;
+
+  if (partes && partes.length > 1) {
+    const m = partes[0].match(reData);
+    if (m) { dateStr = partes[0]; resto = partes.slice(1).join(" - "); }
+    else { resto = partes.join(" - "); }
+  } else {
+    // Data solta no início: "05/07 Carrossel de dicas"
+    const m = linha.match(/^(\d{1,2}[\/\-.]\d{1,2}(?:[\/\-.]\d{2,4})?)\s+(.*)$/);
+    if (m) { dateStr = m[1]; resto = m[2]; }
+    else { resto = linha; }
+  }
+
+  // Converte a data
+  let date = "";
+  if (dateStr) {
+    const m = dateStr.match(reData);
+    if (m) {
+      const dia = Number(m[1]);
+      const mes = Number(m[2]);
+      let ano = m[3] ? Number(m[3]) : new Date().getFullYear();
+      if (ano < 100) ano += 2000;
+      if (dia >= 1 && dia <= 31 && mes >= 1 && mes <= 12) date = `${ano}-${pad(mes)}-${pad(dia)}`;
+    }
+  }
+
+  // Detecta o tipo, se a primeira palavra do resto for um tipo conhecido
+  let tipo = "Feed";
+  const tokens = resto.split(/\s+|-\s/);
+  const primeiro = (tokens[0] || "").replace(/[-:]/g, "").trim();
+  const achado = POST_TIPOS.find((tp) => tp.toLowerCase() === primeiro.toLowerCase());
+  if (achado && resto.length > primeiro.length) {
+    tipo = achado;
+    resto = resto.slice(resto.toLowerCase().indexOf(primeiro.toLowerCase()) + primeiro.length).replace(/^[\s\-:|]+/, "");
+  }
+
+  return { date, tipo, desc: resto.trim() };
+}
+
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
 const ALLDAY_HOURS = 1;
@@ -1354,8 +1404,8 @@ function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMo
       )}
       {showPaste && !isArchive && (
         <div className="mt-2 bg-violet-50 rounded-lg p-2 border border-violet-100">
-          <p className="text-xs text-slate-500 mb-1">Cole uma descrição por linha. Cada linha vira um post (tipo Feed, status Em copy, data vazia).</p>
-          <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder={"Reels sobre bastidores\nCarrossel de dicas\nStories enquete..."} className="w-full h-24 border border-slate-300 rounded-lg p-2 text-xs" />
+          <p className="text-xs text-slate-500 mb-1">Cole um post por linha. A data no início é opcional (dd/mm ou dd/mm/aaaa) e pode vir solta, com | ou colada do Excel. Se a linha começar com um tipo (Reels, Stories, Carrossel...), ele também é reconhecido.</p>
+          <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder={"05/07 Reels sobre bastidores\n08/07 | Carrossel | Dicas de organização\nStories enquete\n12/07 Feed foto do escritório"} className="w-full h-28 border border-slate-300 rounded-lg p-2 text-xs" />
           <div className="flex gap-2 mt-1">
             <button onClick={doPaste} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-xs font-medium">Importar</button>
             <button onClick={() => { setShowPaste(false); setPasteText(""); }} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs">Cancelar</button>
@@ -1387,8 +1437,11 @@ function PostsView({ client, updateClient, clientTasks }) {
   const pasteList = (mid, lines) => {
     const m = months.find((x) => x.id === mid);
     if (!m) return;
-    const novos = lines.map((desc) => ({ id: uid(), date: "", tipo: "Feed", desc, status: POST_STATUS_DEFAULT, externalOwner: false, ownerName: "" }));
-    updateMonth(mid, { posts: [...(m.posts || []), ...novos] });
+    const novos = lines
+      .map((linha) => parsePostLine(linha))
+      .filter((p) => p && p.desc)
+      .map((p) => ({ id: uid(), date: p.date, tipo: p.tipo, desc: p.desc, status: POST_STATUS_DEFAULT, externalOwner: false, ownerName: "" }));
+    if (novos.length) updateMonth(mid, { posts: [...(m.posts || []), ...novos] });
   };
   const updatePost = (mid, pid, patch) => {
     const m = months.find((x) => x.id === mid);
