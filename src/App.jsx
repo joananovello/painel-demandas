@@ -74,20 +74,47 @@ const migTasks = (ts) => (ts || []).map((t) => ({
 }));
 const migClients = (cs) => (cs || []).map((c) => ({ links: [], creds: [], notes: "", socialMonths: [], ...c }));
 
-const POST_TIPOS = ["Feed", "Reels", "Stories", "Carrossel", "BTS", "Outro"];
+const POST_TIPOS = ["Arte única", "Carrossel", "Reels", "Stories", "BTS", "WhatsApp", "Artigo LinkedIn", "Outro"];
 const POST_STATUS = {
   em_copy: { label: "Em copy", bg: "bg-slate-100", text: "text-slate-600" },
   add_conteudo: { label: "Add conteúdo", bg: "bg-zinc-100", text: "text-zinc-600" },
   criar_arte: { label: "Criar arte", bg: "bg-purple-100", text: "text-purple-700" },
   gravar: { label: "Gravar", bg: "bg-fuchsia-100", text: "text-fuchsia-700" },
   editar: { label: "Editar", bg: "bg-indigo-100", text: "text-indigo-700" },
-  aprovacao: { label: "Aprovação", bg: "bg-amber-100", text: "text-amber-700" },
   alteracao: { label: "Alteração", bg: "bg-orange-100", text: "text-orange-700" },
+  aprovacao: { label: "Aprovação", bg: "bg-amber-100", text: "text-amber-700" },
   programado: { label: "Programado", bg: "bg-blue-100", text: "text-blue-700" },
   postado: { label: "Postado", bg: "bg-green-100", text: "text-green-700" },
   cancelado: { label: "Cancelado", bg: "bg-red-100", text: "text-red-600" },
 };
 const POST_STATUS_DEFAULT = "em_copy";
+
+// Ordem do fluxo de produção. O tempo restante de um post é a soma das etapas daqui pra frente.
+const STAGE_ORDER = ["em_copy", "add_conteudo", "criar_arte", "gravar", "editar", "alteracao", "aprovacao", "programado"];
+const STAGE_DONE = ["postado", "cancelado"];
+
+// Horas de cada etapa, por tipo de post. 0 = essa etapa não se aplica a esse tipo.
+const STAGE_HOURS = {
+  "Arte única":      { em_copy: 0.5,  add_conteudo: 0.25, criar_arte: 1,    gravar: 0,   editar: 0,   alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
+  "Carrossel":       { em_copy: 0.75, add_conteudo: 0.25, criar_arte: 1.5,  gravar: 0,   editar: 0,   alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
+  "Reels":           { em_copy: 0.5,  add_conteudo: 0.25, criar_arte: 0,    gravar: 1,   editar: 1.5, alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
+  "Stories":         { em_copy: 0.25, add_conteudo: 0.25, criar_arte: 0.5,  gravar: 0.25, editar: 0.25, alteracao: 0.25, aprovacao: 0,   programado: 0.25 },
+  "BTS":             { em_copy: 0,    add_conteudo: 0.25, criar_arte: 0,    gravar: 0.5, editar: 0.5, alteracao: 0.25, aprovacao: 0,    programado: 0.25 },
+  "WhatsApp":        { em_copy: 0.5,  add_conteudo: 0.25, criar_arte: 0.5,  gravar: 0,   editar: 0,   alteracao: 0.25, aprovacao: 0.25, programado: 0.25 },
+  "Artigo LinkedIn": { em_copy: 2,    add_conteudo: 0.5,  criar_arte: 0.25, gravar: 0,   editar: 0,   alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
+  "Outro":           { em_copy: 0.5,  add_conteudo: 0.25, criar_arte: 0.75, gravar: 0,   editar: 0,   alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
+};
+
+// Quanto ainda falta de trabalho num post, dado o tipo e o status atual.
+function postRemainingHours(post) {
+  if (!post || post.externalOwner) return 0;
+  if (STAGE_DONE.includes(post.status)) return 0;
+  if (typeof post.estTime === "number" && post.estTime > 0) return post.estTime; // override manual
+  const tabela = STAGE_HOURS[post.tipo] || STAGE_HOURS["Outro"];
+  const i = STAGE_ORDER.indexOf(post.status);
+  if (i === -1) return 0;
+  return STAGE_ORDER.slice(i).reduce((s, st) => s + (tabela[st] || 0), 0);
+}
 
 // Interpreta uma linha colada: extrai data (dd/mm ou dd/mm/aaaa), tipo (se houver) e descrição.
 // Aceita separadores: | , TAB, ou a data solta no início da linha.
@@ -127,10 +154,10 @@ function parsePostLine(raw) {
   }
 
   // Detecta o tipo, se a primeira palavra do resto for um tipo conhecido
-  let tipo = "Feed";
+  let tipo = "Arte única";
   const tokens = resto.split(/\s+|-\s/);
   const primeiro = (tokens[0] || "").replace(/[-:]/g, "").trim();
-  const achado = POST_TIPOS.find((tp) => tp.toLowerCase() === primeiro.toLowerCase());
+  const achado = POST_TIPOS.find((tp) => tp.toLowerCase() === primeiro.toLowerCase() || tp.toLowerCase().startsWith(primeiro.toLowerCase()) && primeiro.length > 3);
   if (achado && resto.length > primeiro.length) {
     tipo = achado;
     resto = resto.slice(resto.toLowerCase().indexOf(primeiro.toLowerCase()) + primeiro.length).replace(/^[\s\-:|]+/, "");
@@ -204,12 +231,34 @@ function collectUnits(tasks) {
   return units;
 }
 
-function buildSchedule(tasks, meetings, workHours) {
+function collectPostUnits(clients) {
+  const units = [];
+  for (const c of clients || []) {
+    for (const m of c.socialMonths || []) {
+      if (m.done) continue;
+      for (const p of m.posts || []) {
+        const horas = postRemainingHours(p);
+        if (!p.date || horas <= 0) continue;
+        units.push({
+          id: `post::${c.id}::${m.id}::${p.id}`,
+          kind: "post",
+          clientId: c.id, monthId: m.id, postId: p.id,
+          deadline: p.date, estTime: horas, urgency: "media",
+          workDate: p.workDate || null,
+          post: p, clientName: c.name, monthName: m.name,
+        });
+      }
+    }
+  }
+  return units;
+}
+
+function buildSchedule(tasks, meetings, workHours, clients = []) {
   const meetingHours = {};
   meetings.forEach((m) => { meetingHours[m.date] = (meetingHours[m.date] || 0) + (m.durationMin || 0) / 60; });
   const capOf = (k) => Math.max(0, workHours - (meetingHours[k] || 0));
 
-  const units = collectUnits(tasks);
+  const units = [...collectUnits(tasks), ...collectPostUnits(clients)];
   const perUnitToday = {};
   const perDayHours = {};
 
@@ -374,7 +423,7 @@ function Painel({ session }) {
 
   const logout = () => supabase.auth.signOut();
 
-  const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours), [data]);
+  const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours, data.clients), [data]);
 
   const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, externalOwner: false, ownerName: "", ...t }] }));
   const editTask = (id, patch) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
@@ -397,6 +446,16 @@ function Painel({ session }) {
   const addClient = (name) => setData((d) => ({ ...d, clients: [...d.clients, { id: uid(), name, links: [], creds: [], notes: "", socialMonths: [] }] }));
   const delClient = (id) => setData((d) => ({ ...d, clients: d.clients.filter((c) => c.id !== id), tasks: d.tasks.filter((t) => t.clientId !== id) }));
   const updateClient = (id, patch) => setData((d) => ({ ...d, clients: d.clients.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
+  const updatePostField = (clientId, monthId, postId, patch) => setData((d) => ({
+    ...d,
+    clients: d.clients.map((c) => c.id !== clientId ? c : {
+      ...c,
+      socialMonths: (c.socialMonths || []).map((m) => m.id !== monthId ? m : {
+        ...m,
+        posts: (m.posts || []).map((p) => p.id === postId ? { ...p, ...patch } : p),
+      }),
+    }),
+  }));
   const addMeeting = (m) => setData((d) => ({ ...d, meetings: [...d.meetings, { id: uid(), ...m }] }));
   const editMeeting = (id, patch) => setData((d) => ({ ...d, meetings: d.meetings.map((m) => (m.id === id ? { ...m, ...patch } : m)) }));
   const delMeeting = (id) => setData((d) => ({ ...d, meetings: d.meetings.filter((m) => m.id !== id) }));
@@ -407,6 +466,34 @@ function Painel({ session }) {
     if (cur.length >= 3) return { ...d, priorities: [...cur.slice(1), id] };
     return { ...d, priorities: [...cur, id] };
   });
+
+  // Modelo: cria a demanda macro de social media (planejamento + análise) e o mês de posts vinculado.
+  const criarModeloSocial = (clientId, nomeMes, refDate) => {
+    const base = fromKey(refDate || TODAY);
+    const ano = base.getFullYear(), mes = base.getMonth();
+    const inicio = toKey(new Date(ano, mes, 1));
+    const fim = toKey(new Date(ano, mes + 1, 0));
+    const taskId = uid();
+    const monthId = uid();
+    const novaTask = {
+      id: taskId, title: `Social media ${nomeMes}`, area: "cliente", clientId,
+      scope: "mes", deadline: fim, estTime: 0, urgency: "media", recurrence: "none",
+      done: false, status: "ativa", notes: "", createdAt: nowISO(), statusSince: nowISO(),
+      workDate: null, externalOwner: false, ownerName: "",
+      subtasks: [
+        { id: uid(), title: "Planejamento do mês", deadline: inicio, estTime: 3, week: 1, done: false, workDate: null, externalOwner: false, ownerName: "" },
+        { id: uid(), title: "Análise de dados do mês", deadline: fim, estTime: 2, week: 5, done: false, workDate: null, externalOwner: false, ownerName: "" },
+      ],
+    };
+    setData((d) => ({
+      ...d,
+      tasks: [...d.tasks, novaTask],
+      clients: d.clients.map((c) => c.id !== clientId ? c : {
+        ...c,
+        socialMonths: [...(c.socialMonths || []), { id: monthId, name: nomeMes, taskId, done: false, posts: [] }],
+      }),
+    }));
+  };
   const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) } });
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando seus dados...</div>;
@@ -455,10 +542,10 @@ function Painel({ session }) {
               </div>
             </header>
 
-            {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} />}
+            {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} updatePostField={updatePostField} onGoClient={() => setTab("cliente")} />}
             {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} />}
             {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
-            {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} />}
+            {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
             {["acohub", "novello", "pessoal", "freela"].includes(tab) && (
               <AreaView area={tab} data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} />
             )}
@@ -596,6 +683,37 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
   );
 }
 
+function PostCard({ un, onAdvance, onOpenClient, todayHours, draggable, onDragStart }) {
+  const p = un.post;
+  const st = POST_STATUS[p.status] || {};
+  const overdue = p.date && p.date < TODAY;
+  const latePlan = p.workDate && p.date && p.workDate > p.date;
+  const i = STAGE_ORDER.indexOf(p.status);
+  const proximo = i >= 0 && i < STAGE_ORDER.length - 1 ? STAGE_ORDER[i + 1] : "postado";
+  return (
+    <div draggable={draggable || undefined} onDragStart={onDragStart} className={`bg-white rounded-lg border border-slate-200 border-l-4 border-l-pink-400 p-2 mb-2 ${draggable ? "cursor-move" : ""}`}>
+      <div className="flex items-start gap-1.5">
+        {draggable && <GripVertical size={12} className="text-slate-300 mt-0.5 shrink-0" />}
+        <button onClick={() => onAdvance(un, proximo)} title={`Avançar para ${POST_STATUS[proximo]?.label || "Postado"}`} className="shrink-0 w-4 h-4 mt-0.5 rounded border border-slate-300 flex items-center justify-center hover:border-pink-500 hover:bg-pink-50">
+          <Check size={11} className="text-slate-300" />
+        </button>
+        <div className="flex-1 min-w-0">
+          <p onClick={() => onOpenClient && onOpenClient(un.clientId)} className="text-sm leading-snug cursor-pointer hover:text-pink-700">{p.desc || "(sem descrição)"}</p>
+          <p className="text-xs text-slate-400 truncate">{un.clientName} • {p.tipo}</p>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-xs">
+        <span className={`px-1.5 py-0.5 rounded font-medium ${st.bg} ${st.text}`}>{st.label}</span>
+        {todayHours > 0 && <span className="font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
+        {p.date && <span className={overdue ? "text-red-600 font-medium" : "text-slate-400"}>{overdue ? "atrasado " : "sai "}{fmtBR(p.date)}</span>}
+        <span className="text-slate-300">restam {un.estTime}h</span>
+        {latePlan && <span className="text-red-500">após a data</span>}
+        <span className="text-pink-400 flex items-center gap-0.5"><ListChecks size={10} />post</span>
+      </div>
+    </div>
+  );
+}
+
 function KColumn({ title, count, accent, today, hours, over, onDragOver, onDrop, children }) {
   return (
     <div
@@ -617,7 +735,7 @@ function KColumn({ title, count, accent, today, hours, over, onDragOver, onDrop,
   );
 }
 
-function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority }) {
+function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority, updatePostField, onGoClient }) {
   const wh = data.settings.workHours;
   const sd = data.settings.stuckDays;
   const tasks = data.tasks;
@@ -630,8 +748,8 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
   const dragRef = useRef(null);
   const [showProxima, setShowProxima] = useState(false);
   const [showMes, setShowMes] = useState(false);
-  const startDrag = (e, kind, taskId, subId) => {
-    dragRef.current = { kind, taskId, subId };
+  const startDrag = (e, kind, taskId, subId, un) => {
+    dragRef.current = { kind, taskId, subId, un };
     try { e.dataTransfer.setData("text/plain", "drag"); e.dataTransfer.effectAllowed = "move"; } catch (_) {}
   };
   const dropDay = (dayKey) => {
@@ -639,15 +757,22 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
     dragRef.current = null;
     if (!it) return;
     if (it.kind === "task") editTask(it.taskId, { workDate: dayKey });
-    else editSubtask(it.taskId, it.subId, { workDate: dayKey });
+    else if (it.kind === "sub") editSubtask(it.taskId, it.subId, { workDate: dayKey });
+    else if (it.kind === "post") updatePostField(it.un.clientId, it.un.monthId, it.un.postId, { workDate: dayKey });
   };
+
+  const avancarPost = (un, novoStatus) => updatePostField(un.clientId, un.monthId, un.postId, { status: novoStatus });
 
   const findSub = (taskId, subId) => { const t = tasks.find((x) => x.id === taskId); return { task: t, sub: t ? (t.subtasks || []).find((s) => s.id === subId) : null }; };
 
   const todoUnits = sched.units
     .filter((un) => (sched.perUnitToday[un.id] || 0) > 0 || (un.deadline && un.deadline <= TODAY) || (un.workDate && un.workDate <= TODAY))
-    .map((un) => { const r = findSub(un.taskId, un.subId); return { ...un, task: r.task, sub: r.sub, hoje: sched.perUnitToday[un.id] || 0 }; })
-    .filter((un) => un.task)
+    .map((un) => {
+      if (un.kind === "post") return { ...un, hoje: sched.perUnitToday[un.id] || 0 };
+      const r = findSub(un.taskId, un.subId);
+      return { ...un, task: r.task, sub: r.sub, hoje: sched.perUnitToday[un.id] || 0 };
+    })
+    .filter((un) => un.kind === "post" || un.task)
     .sort((a, b) => {
       const da = a.deadline || "9"; const db = b.deadline || "9";
       const ov = (da < TODAY ? 0 : 1) - (db < TODAY ? 0 : 1);
@@ -682,6 +807,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
 
   const dayOf = (x) => x.workDate || x.deadline;
 
+  const postUnits = sched.units.filter((u) => u.kind === "post");
   const week = labels.map((lb, i) => {
     const d = new Date(ws); d.setDate(ws.getDate() + i);
     const key = toKey(d);
@@ -689,6 +815,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
       key, label: lb, num: d.getDate(),
       tasks: tasks.filter((t) => !t.done && dayOf(t) === key).sort((a, b) => URG[b.urgency].rank - URG[a.urgency].rank),
       subs: tasks.flatMap((t) => (t.subtasks || []).filter((s) => !s.done && dayOf(s) === key).map((s) => ({ task: t, sub: s }))),
+      posts: postUnits.filter((u) => (u.workDate || u.deadline) === key),
       meetings: data.meetings.filter((m) => m.date === key).sort((a, b) => (a.start || "").localeCompare(b.start || "")),
     };
   });
@@ -742,9 +869,11 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
         <div className="flex gap-3 overflow-x-auto pb-2">
           <KColumn title="A fazer" count={todoUnits.length} accent="text-violet-700" today>
             {todoUnits.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada travado para hoje.</p> :
-              todoUnits.map((un) => un.sub
-                ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.taskId)} />
-                : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.task.id)} />)}
+              todoUnits.map((un) => un.kind === "post"
+                ? <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} todayHours={un.hoje} />
+                : un.sub
+                  ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.taskId)} />
+                  : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.task.id)} />)}
           </KColumn>
           <KColumn title="Em espera" count={esperaT.length} accent="text-slate-500">
             {esperaT.length === 0 ? <p className="text-xs text-slate-400 px-1">Vazio.</p> :
@@ -772,7 +901,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
               <KColumn
                 key={d.key}
                 title={`${d.label} ${d.num}`}
-                count={d.tasks.length + d.subs.length + d.meetings.length}
+                count={d.tasks.length + d.subs.length + d.meetings.length + d.posts.length}
                 today={d.key === TODAY}
                 hours={dh}
                 over={dh > cp + 0.01}
@@ -780,6 +909,9 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
                 onDrop={(e) => { e.preventDefault(); dropDay(d.key); }}
               >
                 {d.meetings.map((m) => <MeetingCard key={m.id} m={m} />)}
+                {d.posts.map((un) => (
+                  <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} draggable onDragStart={(e) => startDrag(e, "post", null, null, un)} todayHours={d.key === TODAY ? (sched.perUnitToday[un.id] || 0) : 0} />
+                ))}
                 {d.subs.map(({ task, sub }) => (
                   <SubtaskCard
                     key={sub.id} task={task} sub={sub} data={data}
@@ -798,7 +930,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
                     stuckDays={sd}
                   />
                 ))}
-                {d.tasks.length === 0 && d.subs.length === 0 && d.meetings.length === 0 && (
+                {d.tasks.length === 0 && d.subs.length === 0 && d.meetings.length === 0 && d.posts.length === 0 && (
                   <p className="text-xs text-slate-300 px-1">solte aqui</p>
                 )}
               </KColumn>
@@ -1350,6 +1482,7 @@ function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMo
               <th className="py-1 pr-2 font-medium w-24">Tipo</th>
               <th className="py-1 pr-2 font-medium">Descrição</th>
               <th className="py-1 pr-2 font-medium w-32">Status</th>
+              <th className="py-1 pr-2 font-medium w-14">Restam</th>
               <th className="py-1 pr-2 font-medium w-28">Resp. externo</th>
               <th className="py-1 w-5" />
             </tr>
@@ -1372,6 +1505,9 @@ function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMo
                   <select value={p.status} onChange={(e) => onUpdatePost(m.id, p.id, { status: e.target.value })} className={`border border-slate-200 rounded px-1 py-0.5 w-full font-medium ${POST_STATUS[p.status]?.bg} ${POST_STATUS[p.status]?.text}`}>
                     {Object.entries(POST_STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                   </select>
+                </td>
+                <td className="py-1 pr-2">
+                  {(() => { const h = postRemainingHours(p); return h > 0 ? <span className="text-violet-700 font-semibold">{h}h</span> : <span className="text-slate-300">0h</span>; })()}
                 </td>
                 <td className="py-1 pr-2">
                   <div className="flex flex-col gap-0.5">
@@ -1432,7 +1568,7 @@ function PostsView({ client, updateClient, clientTasks }) {
   const addPost = (mid) => {
     const m = months.find((x) => x.id === mid);
     if (!m) return;
-    updateMonth(mid, { posts: [...(m.posts || []), { id: uid(), date: "", tipo: "Feed", desc: "", status: POST_STATUS_DEFAULT, externalOwner: false, ownerName: "" }] });
+    updateMonth(mid, { posts: [...(m.posts || []), { id: uid(), date: "", tipo: "Arte única", desc: "", status: POST_STATUS_DEFAULT, externalOwner: false, ownerName: "", workDate: null }] });
   };
   const pasteList = (mid, lines) => {
     const m = months.find((x) => x.id === mid);
@@ -1440,7 +1576,7 @@ function PostsView({ client, updateClient, clientTasks }) {
     const novos = lines
       .map((linha) => parsePostLine(linha))
       .filter((p) => p && p.desc)
-      .map((p) => ({ id: uid(), date: p.date, tipo: p.tipo, desc: p.desc, status: POST_STATUS_DEFAULT, externalOwner: false, ownerName: "" }));
+      .map((p) => ({ id: uid(), date: p.date, tipo: p.tipo, desc: p.desc, status: POST_STATUS_DEFAULT, externalOwner: false, ownerName: "", workDate: null }));
     if (novos.length) updateMonth(mid, { posts: [...(m.posts || []), ...novos] });
   };
   const updatePost = (mid, pid, patch) => {
@@ -1469,9 +1605,14 @@ function PostsView({ client, updateClient, clientTasks }) {
 
   return (
     <div>
-      <div className="flex gap-2 mb-3 items-center">
-        <input value={newMonthName} onChange={(e) => setNewMonthName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMonth(); }} placeholder="Nome do mês (ex: Julho 2025)" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
-        <button onClick={addMonth} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm"><Plus size={15} /></button>
+      <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 mb-3">
+        <p className="text-xs text-violet-800 font-semibold mb-1">Modelo de social media</p>
+        <p className="text-xs text-slate-500 mb-2">Cria a demanda do mês com as subtarefas de planejamento e análise de dados, e já abre o fluxo de posts vinculado. As horas de produção vêm dos posts, conforme o estágio de cada um.</p>
+        <div className="flex gap-2 items-center">
+          <input value={newMonthName} onChange={(e) => setNewMonthName(e.target.value)} placeholder="Nome do mês (ex: Julho 2026)" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
+          <button onClick={criarModelo} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap">Criar mês completo</button>
+          <button onClick={addMonth} title="Criar só o mês de posts, sem demanda" className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-sm whitespace-nowrap">Só posts</button>
+        </div>
       </div>
       {active.length === 0 && <p className="text-sm text-slate-400 mb-3">Nenhum mês ativo. Crie um acima.</p>}
       {active.map((m) => (
@@ -1561,7 +1702,7 @@ function ClientInfo({ client, updateClient }) {
   );
 }
 
-function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, delClient, updateClient, onOpen, stuckDays }) {
+function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, delClient, updateClient, onOpen, stuckDays, onCriarModeloSocial }) {
   const [adding, setAdding] = useState(false);
   const [newClient, setNewClient] = useState("");
   const [openClient, setOpenClient] = useState(null);
@@ -1614,7 +1755,7 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
                     ct.length === 0 ? <p className="text-xs text-slate-400 mb-2">Sem demandas para este cliente.</p> :
                       <TaskGroups tasks={ct} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={true} />
                   ) : view === "posts" ? (
-                    <PostsView client={c} updateClient={updateClient} clientTasks={ct} />
+                    <PostsView client={c} updateClient={updateClient} clientTasks={ct} onCriarModeloSocial={onCriarModeloSocial} />
                   ) : (
                     <ClientInfo client={c} updateClient={updateClient} />
                   )}
