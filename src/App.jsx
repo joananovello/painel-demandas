@@ -1605,21 +1605,9 @@ function PostsView({ client, updateClient, clientTasks }) {
 
   return (
     <div>
-      <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 mb-3">
-        <p className="text-xs text-violet-800 font-semibold mb-1">Modelo de social media</p>
-        <p className="text-xs text-slate-500 mb-2">Cria a demanda do mês com as subtarefas de planejamento e análise de dados, e já abre o fluxo de posts vinculado. As horas de produção vêm dos posts, conforme o estágio de cada um.</p>
-        <div className="flex gap-2 items-center">
-          <input value={newMonthName} onChange={(e) => setNewMonthName(e.target.value)} placeholder="Nome do mês (ex: Julho 2026)" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
-          <button
-            onClick={() => {
-              const nome = newMonthName.trim() || cap(new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" }));
-              if (typeof onCriarModeloSocial !== "function") { alert("Erro: a função de criar o modelo não chegou até aqui (onCriarModeloSocial indefinida)."); return; }
-              onCriarModeloSocial(client.id, nome, TODAY);
-              setNewMonthName("");
-            }}
-            className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap">Criar mês completo</button>
-          <button onClick={addMonth} title="Criar só o mês de posts, sem demanda" className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-sm whitespace-nowrap">Só posts</button>
-        </div>
+      <div className="flex gap-2 mb-3 items-center">
+        <input value={newMonthName} onChange={(e) => setNewMonthName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMonth(); }} placeholder="Criar mês só de posts (ex: Julho 2026)" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
+        <button onClick={addMonth} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-sm"><Plus size={15} /></button>
       </div>
       {active.length === 0 && <p className="text-sm text-slate-400 mb-3">Nenhum mês ativo. Crie um acima.</p>}
       {active.map((m) => (
@@ -1762,7 +1750,10 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
                     ct.length === 0 ? <p className="text-xs text-slate-400 mb-2">Sem demandas para este cliente.</p> :
                       <TaskGroups tasks={ct} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={true} />
                   ) : view === "posts" ? (
-                    <PostsView client={c} updateClient={updateClient} clientTasks={ct} onCriarModeloSocial={onCriarModeloSocial} />
+                    <div>
+                      <ModeloSocialBox client={c} addTask={addTask} updateClient={updateClient} />
+                      <PostsView client={c} updateClient={updateClient} clientTasks={ct} />
+                    </div>
                   ) : (
                     <ClientInfo client={c} updateClient={updateClient} />
                   )}
