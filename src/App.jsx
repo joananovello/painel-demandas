@@ -683,7 +683,7 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
   );
 }
 
-function PostCard({ un, onAdvance, onOpenClient, todayHours, draggable, onDragStart }) {
+function PostCard({ un, onAdvance, onOpenClient, todayHours, draggable, onDragStart, onTogglePriority, isPriority }) {
   const p = un.post;
   const st = POST_STATUS[p.status] || {};
   const overdue = p.date && p.date < TODAY;
@@ -701,6 +701,11 @@ function PostCard({ un, onAdvance, onOpenClient, todayHours, draggable, onDragSt
           <p onClick={() => onOpenClient && onOpenClient(un.clientId)} className="text-sm leading-snug cursor-pointer hover:text-pink-700">{p.desc || "(sem descrição)"}</p>
           <p className="text-xs text-slate-400 truncate">{un.clientName} • {p.tipo}</p>
         </div>
+        {onTogglePriority && (
+          <button onClick={() => onTogglePriority(un.id)} title={isPriority ? "Remover das prioridades" : "Marcar como prioridade"} className="shrink-0 mt-0.5">
+            <Star size={14} className={isPriority ? "fill-amber-400 text-amber-400" : "text-slate-300 hover:text-amber-400"} />
+          </button>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-xs">
         <span className={`px-1.5 py-0.5 rounded font-medium ${st.bg} ${st.text}`}>{st.label}</span>
@@ -796,7 +801,15 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
   const focoPct = totalHoje > 0 ? Math.round((feitoCount / totalHoje) * 100) : 0;
 
   // Prioridades: tarefas marcadas que ainda não foram concluídas
-  const priorityTasks = priorities.map((id) => tasks.find((t) => t.id === id)).filter((t) => t && !t.done);
+  const priorityTasks = priorities.map((id) => {
+    if (String(id).startsWith("post::")) {
+      const u = sched.units.find((x) => x.id === id);
+      if (!u || postRemainingHours(u.post) <= 0) return null;
+      return { id, title: `${u.post.desc || "(post)"} · ${u.clientName}`, isPost: true };
+    }
+    const t = tasks.find((x) => x.id === id);
+    return t && !t.done ? t : null;
+  }).filter(Boolean);
 
   const diaSemana = new Date().getDay(); // 0=dom, 5=sex, 6=sáb
   const ehFimDeSemana = diaSemana === 5 || diaSemana === 6 || diaSemana === 0;
@@ -837,15 +850,16 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white rounded-2xl border border-slate-200 p-4">
-          <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2 mb-2"><CircleDot size={15} className="text-violet-500" /> Prioridades de hoje</h3>
+          <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2 mb-2"><CircleDot size={15} className="text-violet-500" /> Prioridades de hoje <span className="text-xs font-normal text-slate-400">({priorityTasks.length}/3)</span></h3>
           {priorityTasks.length === 0 ? (
-            <p className="text-xs text-slate-400">Marque até 3 tarefas como prioridade na estrela do cartão.</p>
+            <p className="text-xs text-slate-400">Clique na estrela de qualquer cartão para marcar até 3 prioridades.</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {priorityTasks.map((t, i) => (
-                <div key={t.id} className="flex items-start gap-2">
+                <div key={t.id} className="flex items-start gap-2 group">
                   <span className="shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-700 text-xs font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
-                  <button onClick={() => onOpen(t.id)} className="text-sm text-slate-600 text-left hover:text-violet-700 leading-snug">{t.title}</button>
+                  <button onClick={() => t.isPost ? onGoClient() : onOpen(t.id)} className="text-sm text-slate-600 text-left hover:text-violet-700 leading-snug flex-1">{t.title}</button>
+                  <button onClick={() => togglePriority(t.id)} title="Remover das prioridades" className="shrink-0 text-slate-300 hover:text-red-500 mt-0.5"><X size={14} /></button>
                 </div>
               ))}
             </div>
@@ -870,7 +884,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
           <KColumn title="A fazer" count={todoUnits.length} accent="text-violet-700" today>
             {todoUnits.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada travado para hoje.</p> :
               todoUnits.map((un) => un.kind === "post"
-                ? <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} todayHours={un.hoje} />
+                ? <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.id)} />
                 : un.sub
                   ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.taskId)} />
                   : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.task.id)} />)}
@@ -910,7 +924,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
               >
                 {d.meetings.map((m) => <MeetingCard key={m.id} m={m} />)}
                 {d.posts.map((un) => (
-                  <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} draggable onDragStart={(e) => startDrag(e, "post", null, null, un)} todayHours={d.key === TODAY ? (sched.perUnitToday[un.id] || 0) : 0} />
+                  <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} draggable onDragStart={(e) => startDrag(e, "post", null, null, un)} todayHours={d.key === TODAY ? (sched.perUnitToday[un.id] || 0) : 0} onTogglePriority={togglePriority} isPriority={priorities.includes(un.id)} />
                 ))}
                 {d.subs.map(({ task, sub }) => (
                   <SubtaskCard
@@ -919,6 +933,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
                     draggable
                     onDragStart={(e) => startDrag(e, "sub", task.id, sub.id)}
                     todayHours={d.key === TODAY ? (sched.perUnitToday[`${task.id}::${sub.id}`] || 0) : 0}
+                    onTogglePriority={togglePriority} isPriority={priorities.includes(task.id)}
                   />
                 ))}
                 {d.tasks.map((t) => (
@@ -928,6 +943,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
                     draggable
                     onDragStart={(e) => startDrag(e, "task", t.id, null)}
                     stuckDays={sd}
+                    onTogglePriority={togglePriority} isPriority={priorities.includes(t.id)}
                   />
                 ))}
                 {d.tasks.length === 0 && d.subs.length === 0 && d.meetings.length === 0 && d.posts.length === 0 && (
