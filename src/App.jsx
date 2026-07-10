@@ -1353,8 +1353,9 @@ function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClo
   const toggleS = (s) => upSub(s.id, { done: !s.done, doneDate: !s.done ? TODAY : null });
 
   const monthOf = (s) => (s.deadline ? s.deadline.slice(0, 7) : "");
+  const weekOf = (s) => (s.deadline ? weekOfMonth(s.deadline) : (s.week || 1));
   const groupsMap = {};
-  subs.forEach((s) => { const k = `${monthOf(s)}|${s.week || 1}`; (groupsMap[k] = groupsMap[k] || []).push(s); });
+  subs.forEach((s) => { const k = `${monthOf(s)}|${weekOf(s)}`; (groupsMap[k] = groupsMap[k] || []).push(s); });
   const orderedKeys = Object.keys(groupsMap).sort((a, b) => {
     const [ma, wa] = a.split("|"); const [mb, wb] = b.split("|");
     if (ma !== mb) { if (!ma) return 1; if (!mb) return -1; return ma.localeCompare(mb); }
