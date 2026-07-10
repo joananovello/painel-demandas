@@ -554,7 +554,7 @@ function Painel({ session }) {
       </div>
 
       {detailTask && (
-        <TaskDetail task={detailTask} data={data} onEdit={editTask} onDelete={(id) => { delTask(id); setDetailId(null); }} onClose={() => setDetailId(null)} />
+        <TaskDetail task={detailTask} data={data} onEdit={editTask} onToggle={toggleTask} onSetStatus={setStatus} onDelete={(id) => { delTask(id); setDetailId(null); }} onClose={() => setDetailId(null)} />
       )}
 
       {showSettings && (
@@ -1332,7 +1332,7 @@ function TaskForm({ area, clients, onAdd, onClose }) {
   );
 }
 
-function TaskDetail({ task, data, onEdit, onDelete, onClose }) {
+function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClose }) {
   const t = task;
   const isMonthly = t.scope === "mes";
   const subs = t.subtasks || [];
@@ -1397,6 +1397,27 @@ function TaskDetail({ task, data, onEdit, onDelete, onClose }) {
         </div>
 
         <input value={t.title} onChange={(e) => onEdit(t.id, { title: e.target.value })} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-medium mb-2" />
+
+        <div className="flex gap-1 mb-3">
+          {[
+            { key: "andamento", label: "Em andamento", ativo: !t.done && t.status !== "espera", on: "bg-violet-600 text-white border-violet-600" },
+            { key: "espera", label: "Em espera", ativo: !t.done && t.status === "espera", on: "bg-amber-500 text-white border-amber-500" },
+            { key: "concluida", label: "Concluída", ativo: t.done, on: "bg-green-600 text-white border-green-600" },
+          ].map((op) => (
+            <button
+              key={op.key}
+              onClick={() => {
+                if (op.key === "concluida") { if (!t.done) onToggle(t.id); }
+                else if (op.key === "espera") { if (t.done) onToggle(t.id); onSetStatus(t.id, "espera"); }
+                else { if (t.done) onToggle(t.id); onSetStatus(t.id, "ativa"); }
+              }}
+              className={`flex-1 text-xs px-2 py-1.5 rounded-lg border font-medium transition-colors ${op.ativo ? op.on : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}
+            >
+              {op.label}
+            </button>
+          ))}
+        </div>
+
         <TaskFields t={t} clients={data.clients} onChange={(patch) => onEdit(t.id, patch)} allowArea={true} />
         {hasSchedulableSubs && <p className="text-xs text-violet-500 mt-1">Esta demanda tem subtarefas com prazo, então o cálculo do dia agenda as subtarefas (o tempo da demanda mãe é ignorado).</p>}
 
