@@ -185,35 +185,50 @@ function loadGoogleScript() {
   });
 }
 
-async function fetchGoogleEvents(token) {
-  const now = new Date();
-  const end = new Date(); end.setDate(end.getDate() + 30);
-  const params = new URLSearchParams({
-    timeMin: now.toISOString(),
-    timeMax: end.toISOString(),
-    singleEvents: "true",
-    orderBy: "startTime",
-    maxResults: "250",
-  });
-  const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`, {
+async function fetchGoogleCalendars(token) {
+  const res = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList", {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error("Erro ao buscar eventos");
+  if (!res.ok) throw new Error("Erro ao listar agendas");
   const json = await res.json();
-  return (json.items || []).map((ev) => {
-    const allDay = !ev.start?.dateTime;
-    let date, start = "", durationMin = ALLDAY_HOURS * 60;
-    if (allDay) {
-      date = ev.start.date;
-    } else {
-      const sd = new Date(ev.start.dateTime);
-      const ed = new Date(ev.end.dateTime);
-      date = toKey(sd);
-      start = `${pad(sd.getHours())}:${pad(sd.getMinutes())}`;
-      durationMin = Math.max(0, Math.round((ed - sd) / 60000));
-    }
-    return { id: `g_${ev.id}`, title: ev.summary || "(sem título)", date, start, durationMin, allDay, google: true };
-  }).filter((e) => e.date);
+  return (json.items || []).map((c) => ({ id: c.id, name: c.summary || c.id, primary: !!c.primary, color: c.backgroundColor }));
+}
+
+async function fetchGoogleEvents(token, calendarIds) {
+  const now = new Date();
+  const end = new Date(); end.setDate(end.getDate() + 30);
+  const ids = (calendarIds && calendarIds.length) ? calendarIds : ["primary"];
+  const todos = [];
+  for (const calId of ids) {
+    const params = new URLSearchParams({
+      timeMin: now.toISOString(),
+      timeMax: end.toISOString(),
+      singleEvents: "true",
+      orderBy: "startTime",
+      maxResults: "250",
+    });
+    try {
+      const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      for (const ev of (json.items || [])) {
+        const allDay = !ev.start?.dateTime;
+        let date, start = "", durationMin = ALLDAY_HOURS * 60;
+        if (allDay) { date = ev.start.date; }
+        else {
+          const sd = new Date(ev.start.dateTime);
+          const ed = new Date(ev.end.dateTime);
+          date = toKey(sd);
+          start = `${pad(sd.getHours())}:${pad(sd.getMinutes())}`;
+          durationMin = Math.max(0, Math.round((ed - sd) / 60000));
+        }
+        if (date) todos.push({ id: `g_${ev.id}`, title: ev.summary || "(sem título)", date, start, durationMin, allDay, google: true, calId });
+      }
+    } catch (_) {}
+  }
+  return todos;
 }
 
 function collectUnits(tasks) {
@@ -345,8 +360,11 @@ function Painel({ session }) {
   const [showSettings, setShowSettings] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const [googleEvents, setGoogleEvents] = useState([]);
-  const [googleStatus, setGoogleStatus] = useState("idle"); // idle | connecting | connected | error
+  const [googleStatus, setGoogleStatus] = useState("idle"); // idle | connecting | choosing | connected | error
   const [googleMsg, setGoogleMsg] = useState("");
+  const [googleCalendars, setGoogleCalendars] = useState([]);
+  const [selectedCals, setSelectedCals] = useState([]);
+  const googleTokenRef = useRef(null);
   const tokenClientRef = useRef(null);
   const loaded = useRef(false);
   const saveTimer = useRef(null);
@@ -361,18 +379,34 @@ function Painel({ session }) {
         scope: GOOGLE_SCOPE,
         callback: async (resp) => {
           if (resp.error) { setGoogleStatus("error"); setGoogleMsg("Permissão negada ou cancelada."); return; }
+          googleTokenRef.current = resp.access_token;
           try {
-            const events = await fetchGoogleEvents(resp.access_token);
-            setGoogleEvents(events);
-            setGoogleStatus("connected");
-            setGoogleMsg(`${events.length} eventos carregados.`);
-          } catch (e) { setGoogleStatus("error"); setGoogleMsg("Erro ao buscar eventos da agenda."); }
+            const cals = await fetchGoogleCalendars(resp.access_token);
+            setGoogleCalendars(cals);
+            // pré-seleciona a principal, ou mantém a seleção anterior
+            setSelectedCals((prev) => prev.length ? prev : cals.filter((c) => c.primary).map((c) => c.id));
+            setGoogleStatus("choosing");
+          } catch (e) { setGoogleStatus("error"); setGoogleMsg("Erro ao listar suas agendas."); }
         },
       });
       tokenClientRef.current.requestAccessToken();
     } catch (e) { setGoogleStatus("error"); setGoogleMsg("Não foi possível carregar o Google."); }
   };
-  const disconnectGoogle = () => { setGoogleEvents([]); setGoogleStatus("idle"); setGoogleMsg(""); };
+
+  const carregarEventos = async (cals) => {
+    const ids = cals || selectedCals;
+    if (!googleTokenRef.current || !ids.length) return;
+    setGoogleMsg("Carregando eventos...");
+    try {
+      const events = await fetchGoogleEvents(googleTokenRef.current, ids);
+      setGoogleEvents(events);
+      setGoogleStatus("connected");
+      setGoogleMsg(`${events.length} eventos de ${ids.length} agenda(s).`);
+    } catch (e) { setGoogleStatus("error"); setGoogleMsg("Erro ao buscar eventos."); }
+  };
+
+  const toggleCal = (id) => setSelectedCals((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const disconnectGoogle = () => { setGoogleEvents([]); setGoogleStatus("idle"); setGoogleMsg(""); googleTokenRef.current = null; };
 
   const importGoogleEvents = () => {
     if (!googleEvents.length) return;
@@ -543,7 +577,7 @@ function Painel({ session }) {
             </header>
 
             {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} updatePostField={updatePostField} onGoClient={() => setTab("cliente")} />}
-            {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} />}
+            {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} googleCalendars={googleCalendars} selectedCals={selectedCals} onToggleCal={toggleCal} onCarregarEventos={carregarEventos} />}
             {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
             {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
             {["acohub", "novello", "pessoal", "freela"].includes(tab) && (
@@ -1890,7 +1924,7 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
   );
 }
 
-function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], googleStatus = "idle", googleMsg = "", onConnectGoogle, onDisconnectGoogle, onImportGoogle }) {
+function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], googleStatus = "idle", googleMsg = "", onConnectGoogle, onDisconnectGoogle, onImportGoogle, googleCalendars = [], selectedCals = [], onToggleCal, onCarregarEventos }) {
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(TODAY);
   const [start, setStart] = useState("09:00");
@@ -1916,11 +1950,31 @@ function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], 
               <button onClick={onImportGoogle} className="text-sm bg-violet-600 text-white rounded-lg px-3 py-1.5 font-medium hover:bg-violet-700">Importar / atualizar</button>
               <button onClick={onDisconnectGoogle} className="text-xs text-slate-400 hover:text-red-500">Desconectar</button>
             </div>
+          : googleStatus === "choosing"
+          ? <button onClick={onDisconnectGoogle} className="text-xs text-slate-400 hover:text-red-500">Cancelar</button>
           : <button onClick={onConnectGoogle} disabled={googleStatus === "connecting"} className="text-sm bg-blue-600 text-white rounded-lg px-3 py-1.5 font-medium hover:bg-blue-700 disabled:opacity-60">{googleStatus === "connecting" ? "Conectando..." : "Conectar Google Agenda"}</button>
       }>
-        {googleStatus === "connected" ? (
+        {googleStatus === "choosing" ? (
           <div>
-            <p className="text-xs text-slate-500 mb-2">Prévia dos eventos do Google (próximos 30 dias). Clique em "Importar / atualizar" para copiá-los para a sua agenda interna, onde ficam salvos e entram no cálculo de horas. {googleMsg && <span className="text-violet-600 font-medium">{googleMsg}</span>}</p>
+            <p className="text-sm font-medium text-slate-700 mb-2">Escolha quais agendas puxar:</p>
+            <div className="space-y-1 mb-3">
+              {googleCalendars.map((c) => (
+                <label key={c.id} className="flex items-center gap-2 cursor-pointer py-1">
+                  <input type="checkbox" checked={selectedCals.includes(c.id)} onChange={() => onToggleCal(c.id)} className="w-4 h-4 accent-violet-600" />
+                  <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: c.color || "#a78bfa" }} />
+                  <span className="text-sm flex-1">{c.name}</span>
+                  {c.primary && <span className="text-xs text-slate-400">principal</span>}
+                </label>
+              ))}
+            </div>
+            <button onClick={() => onCarregarEventos()} disabled={selectedCals.length === 0} className="bg-violet-600 text-white rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50">Carregar eventos ({selectedCals.length})</button>
+          </div>
+        ) : googleStatus === "connected" ? (
+          <div>
+            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <p className="text-xs text-slate-500">Prévia dos eventos (próximos 30 dias). Clique em "Importar / atualizar" para copiá-los para sua agenda interna. {googleMsg && <span className="text-violet-600 font-medium">{googleMsg}</span>}</p>
+              <button onClick={onConnectGoogle} className="text-xs text-blue-600 hover:text-blue-800 whitespace-nowrap">Trocar agendas</button>
+            </div>
             {googleUpcoming.length === 0 ? <p className="text-sm text-slate-400">Nenhum evento nos próximos 30 dias.</p> :
               googleUpcoming.map((e) => (
                 <div key={e.id} className="flex items-center gap-3 py-1.5 border-b border-slate-100 last:border-0">
@@ -1935,7 +1989,7 @@ function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], 
         ) : googleStatus === "error" ? (
           <p className="text-sm text-red-600">{googleMsg || "Erro ao conectar."} Tente novamente.</p>
         ) : (
-          <p className="text-sm text-slate-400">Conecte sua agenda do Google e importe os eventos para dentro do painel. Uma vez importados, eles ficam salvos e contam no cálculo de horas, mesmo depois que a conexão do Google expirar. Só leitura, próximos 30 dias da agenda principal.</p>
+          <p className="text-sm text-slate-400">Conecte sua agenda do Google, escolha quais agendas puxar (pessoal, profissional...) e importe os eventos. Uma vez importados, ficam salvos e contam no cálculo de horas mesmo depois que a conexão expirar. Só leitura, próximos 30 dias.</p>
         )}
       </Section>
 
