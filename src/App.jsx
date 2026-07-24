@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star } from "lucide-react";
+import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2 } from "lucide-react";
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 
@@ -457,6 +457,70 @@ function Painel({ session }) {
 
   const logout = () => supabase.auth.signOut();
 
+  // ---- Histórico (desfazer / refazer) ----
+  const historyRef = useRef([]);
+  const futureRef = useRef([]);
+  const prevDataRef = useRef(null);
+  const skipHistory = useRef(false);
+  const lastPush = useRef(0);
+  const [histTick, setHistTick] = useState(0);
+
+  useEffect(() => {
+    if (!loaded.current) { prevDataRef.current = data; return; }
+    if (skipHistory.current) { skipHistory.current = false; prevDataRef.current = data; return; }
+    const prev = prevDataRef.current;
+    if (prev && prev !== data) {
+      const agora = Date.now();
+      // agrupa alterações muito próximas (digitação) num único passo
+      if (agora - lastPush.current > 700) {
+        historyRef.current = [...historyRef.current.slice(-39), prev];
+        futureRef.current = [];
+        setHistTick((n) => n + 1);
+      }
+      lastPush.current = agora;
+    }
+    prevDataRef.current = data;
+  }, [data]);
+
+  const undo = () => {
+    const h = historyRef.current;
+    if (!h.length) return;
+    const anterior = h[h.length - 1];
+    historyRef.current = h.slice(0, -1);
+    futureRef.current = [data, ...futureRef.current].slice(0, 40);
+    skipHistory.current = true;
+    setData(anterior);
+    setHistTick((n) => n + 1);
+  };
+
+  const redo = () => {
+    const f = futureRef.current;
+    if (!f.length) return;
+    const proximo = f[0];
+    futureRef.current = f.slice(1);
+    historyRef.current = [...historyRef.current, data];
+    skipHistory.current = true;
+    setData(proximo);
+    setHistTick((n) => n + 1);
+  };
+
+  useEffect(() => {
+    const onKey = (e) => {
+      const alvo = e.target;
+      const digitando = alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA" || alvo.isContentEditable);
+      if (digitando) return; // deixa o desfazer nativo do campo funcionar
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (!ctrl) return;
+      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((e.key === "z" && e.shiftKey) || e.key === "y") { e.preventDefault(); redo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [data]);
+
+  const podeDesfazer = historyRef.current.length > 0;
+  const podeRefazer = futureRef.current.length > 0;
+
   const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours, data.clients), [data]);
 
   const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, externalOwner: false, ownerName: "", ...t }] }));
@@ -567,11 +631,21 @@ function Painel({ session }) {
                 <h1 className="text-2xl font-bold text-violet-900">{saudacao}, Joana! 👋</h1>
                 <p className="text-sm text-violet-500 capitalize">{dataExt}</p>
               </div>
-              <div className="bg-white rounded-xl border border-slate-200 px-4 py-2 flex items-center gap-3">
-                <Clock size={18} className="text-violet-500" />
-                <div>
-                  <p className="text-sm font-bold text-slate-700">{new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
-                  <p className="text-xs text-slate-400 capitalize">{new Date().toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })}</p>
+              <div className="flex items-center gap-2">
+                <div className="no-print flex items-center gap-1 bg-white rounded-xl border border-slate-200 px-1.5 py-1.5">
+                  <button onClick={undo} disabled={!podeDesfazer} title="Desfazer (Ctrl+Z)" className={`p-1.5 rounded-lg ${podeDesfazer ? "text-slate-600 hover:bg-violet-50 hover:text-violet-600" : "text-slate-200 cursor-default"}`}>
+                    <Undo2 size={17} />
+                  </button>
+                  <button onClick={redo} disabled={!podeRefazer} title="Refazer (Ctrl+Shift+Z)" className={`p-1.5 rounded-lg ${podeRefazer ? "text-slate-600 hover:bg-violet-50 hover:text-violet-600" : "text-slate-200 cursor-default"}`}>
+                    <Redo2 size={17} />
+                  </button>
+                </div>
+                <div className="bg-white rounded-xl border border-slate-200 px-4 py-2 flex items-center gap-3">
+                  <Clock size={18} className="text-violet-500" />
+                  <div>
+                    <p className="text-sm font-bold text-slate-700">{new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
+                    <p className="text-xs text-slate-400 capitalize">{new Date().toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })}</p>
+                  </div>
                 </div>
               </div>
             </header>
