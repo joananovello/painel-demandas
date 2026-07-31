@@ -62,7 +62,7 @@ const weekOfMonth = (key) => {
 const TODAY_WEEK = weekOfMonth(TODAY);
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
 
-const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [] };
+const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: ACO_DEFAULT_PRICING };
 const migTasks = (ts) => (ts || []).map((t) => ({
   status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t,
   subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, externalOwner: false, ownerName: "", ...s })),
@@ -88,6 +88,136 @@ const POST_STATUS = {
   cancelado: { label: "Cancelado", bg: "bg-red-100", text: "text-red-600" },
 };
 const POST_STATUS_DEFAULT = "em_copy";
+
+// ---------- AcoHub: reservas ----------
+const ACO_DEFAULT_PRICING = {
+  estudio: {
+    semana: { h1: 110, h2: 100, h3: 90, meio: 320, dia: 640 },
+    fds:    { h1: 150, h2: 140, h3: 130, meio: 400, dia: 700 },
+  },
+  sala: {
+    semana: { h1: 100, h2: 90, h3: 85, meio: 320, dia: 640 },
+    fds:    { h1: 140, h2: 130, h3: 125, meio: 400, dia: 700 },
+  },
+  adicionalForaHorario: 20,
+  descontoPrimeira: 10, // %
+};
+
+const ACO_RES_STATUS = {
+  orcamento: { label: "Orçamento", bg: "bg-slate-100", text: "text-slate-600" },
+  confirmada: { label: "Confirmada", bg: "bg-blue-100", text: "text-blue-700" },
+  realizada: { label: "Realizada", bg: "bg-violet-100", text: "text-violet-700" },
+  cobrada: { label: "Cobrada", bg: "bg-green-100", text: "text-green-700" },
+};
+
+const ACO_ESPACOS = { estudio: "Estúdio", sala: "Sala de reunião" };
+
+// Calcula o valor de uma reserva pela tabela de preços.
+function calcReserva({ espaco, horas, fds, foraHorario, primeira }, pricing = ACO_DEFAULT_PRICING) {
+  const tab = (pricing[espaco] || pricing.estudio)[fds ? "fds" : "semana"];
+  let base = 0;
+  const h = Number(horas) || 0;
+  if (h <= 0) base = 0;
+  else if (h === 1) base = tab.h1;
+  else if (h === 2) base = tab.h2 * 2;
+  else if (h === 3) base = tab.h3 * 3;
+  else if (h === 4) base = tab.meio;
+  else if (h >= 8) base = tab.dia;
+  else {
+    // 5, 6, 7h: meio período + horas extras avulsas na faixa de 3h
+    const extra = h - 4;
+    base = tab.meio + tab.h3 * extra;
+    if (base > tab.dia) base = tab.dia; // nunca passa do dia inteiro
+  }
+  const adicional = foraHorario ? (pricing.adicionalForaHorario || 0) : 0;
+  const subtotal = base + adicional;
+  const desc = primeira ? subtotal * ((pricing.descontoPrimeira || 0) / 100) : 0;
+  return { base, adicional, subtotal, desconto: desc, total: Math.round((subtotal - desc) * 100) / 100 };
+}
+
+// Textos padrão do AcoHub (com placeholders preenchidos por reserva)
+function textoOrcamento(r) {
+  const dt = r.date ? fmtBR(r.date) : "[DATA]";
+  const hr = (r.horaIni && r.horaFim) ? `das ${r.horaIni} às ${r.horaFim}` : "[HORÁRIO]";
+  return `AGENDAMENTO ACOHUB ${r.espaco === "sala" ? "SALA DE REUNIÃO" : "ESTÚDIO"}
+Data: ${dt} ${hr}.
+Cliente: ${r.cliente || "[CLIENTE]"}
+${r.parceiro ? `Parceiro: ${r.parceiro}\n` : ""}Tipo: ${r.tipo || "[TIPO]"}
+Valor total: R$ ${(r.valorTotal ?? 0).toFixed(2).replace(".", ",")}
+Opções de Pagamento:
+Cartão de crédito: Pagamento antecipado (aplicável taxa de parcelamento se necessário).
+Pix: 50% no momento da reserva e 50% no dia do agendamento.
+Observação: O agendamento será confirmado somente após a confirmação do pagamento.
+Dados Cadastrais:
+Nome completo ou Razão Social.
+CPF ou CNPJ.
+Endereço completo (incluindo CEP).
+Email`;
+}
+
+function textoAgenda(r) {
+  return `[ACO] ${r.cliente || "Cliente"} - ${r.tipo || "Foto/Vídeo"}`;
+}
+
+function textoGuia(r) {
+  const dt = r.date ? fmtBR(r.date) : "[DATA]";
+  const hr = (r.horaIni && r.horaFim) ? `${r.horaIni} às ${r.horaFim}` : "[HORÁRIO]";
+  return `Guia de Uso do Estúdio – AcoHub
+Oi! Obrigado por agendar o estúdio do AcoHub. Aqui estão algumas informações para você aproveitar o espaço da melhor forma.
+
+📍 Detalhes do seu agendamento
+Data: ${dt}
+Horário: ${hr}
+Local: R. Tapajós, 401 - Sala 36 - 3º andar - Centro, Pato Branco - PR
+Dúvidas no dia? 46 99140-1012
+
+Chegue pelo menos 10 minutos antes para organizar tudo com calma. O tempo de uso começa a contar no horário agendado.
+
+🛠️ O que temos disponível para você
+- Iluminação profissional
+- Teleprompter
+- Fundo infinito de papel
+- Sofá, mesa e cadeiras para cenografia
+- Água e café
+- Tripé e suporte para celular/câmera (se precisar, só avisar)
+
+🚫 O que não está incluso
+- Microfone
+- Câmera/celular
+- Auxílio profissional (caso precise de alguém para operar equipamentos, avise antes)
+
+📌 Cuidados e Regras do Estúdio
+- Evite pisar no fundo de papel com calçados.
+- Se for colocar cadeiras ou objetos no fundo infinito, use os suportes disponíveis.
+- O tempo de aluguel inclui montagem e desmontagem.
+- Se precisar de mais tempo, consulte a disponibilidade antes do fim do período.
+- Não é necessário limpar o espaço, mas recolha seus pertences antes de sair.
+
+Se precisar de algo, é só chamar.
+WhatsApp: 46 99140-1012
+Te esperamos no AcoHub.`;
+}
+
+function textoFinal(r) {
+  return `Oi, ${r.cliente || "[NOME]"}!
+Obrigado por utilizar o estúdio do AcoHub. Esperamos que tenha sido uma boa experiência para você!
+Se puder, queremos saber sua opinião para continuarmos melhorando. É rapidinho, só responder esse formulário: https://forms.gle/GaB2bhtmbkkGaz7t5
+Ah, e sobre o pagamento, como prefere fazer?
+Ah, e caso seja possível, pode deixar uma avaliação sobre nós lá no Google?
+https://g.page/r/CU5vdvd_DXSuEAI/review
+
+Se precisar do estúdio novamente, é só chamar. Estamos à disposição!`;
+}
+
+// Checklist do processo: 6 fases, viram tarefas com tempo estimado.
+const ACO_PROCESSO = [
+  { titulo: "1. Solicitação de agendamento", est: 0.25, notas: "Coletar: nome/empresa, data, horário início/término, tempo total.\nVerificar disponibilidade na agenda. Se indisponível, sugerir outro horário." },
+  { titulo: "2. Confirmação e pagamento", est: 0.5, notas: "Enviar orçamento detalhado.\nPagamento: cartão (antecipado) ou Pix (50% reserva + 50% no dia).\nSolicitar dados cadastrais (nome/razão social, CPF/CNPJ, endereço com CEP, e-mail)." },
+  { titulo: "3. Confirmação interna", est: 0.5, notas: "Adicionar no grupo interno.\nSalvar no Google Agenda: [ACO] Nome do Cliente - Foto/Vídeo.\nEmitir nota fiscal (sob demanda).\nEnviar guia de orientações e itens disponíveis." },
+  { titulo: "4. Preparação no dia anterior", est: 0.75, notas: "Confirmar com cliente: data, horário, nº de pessoas.\nOrganizar e preparar o estúdio.\nChecagem: água, limpeza do banheiro, retirar lixo." },
+  { titulo: "5. No dia do agendamento", est: 0.5, notas: "Organizar a mesa com água e cápsulas de café.\nLigar o ar-condicionado com antecedência." },
+  { titulo: "6. Pós-agendamento", est: 0.5, notas: "Organizar o espaço (limpar, retirar lixo, lavar utensílios).\nEnviar formulário de feedback.\nCobrar segunda parte do valor, se aplicável (Pix no dia)." },
+];
 
 // Ordem do fluxo de produção. O tempo restante de um post é a soma das etapas daqui pra frente.
 const STAGE_ORDER = ["em_copy", "add_conteudo", "criar_arte", "gravar", "editar", "alteracao", "aprovacao", "programado"];
@@ -439,6 +569,8 @@ function Painel({ session }) {
           p.clients = migClients(p.clients);
           p.settings = { workHours: 8, stuckDays: 7, ...(p.settings || {}) };
           p.priorities = Array.isArray(p.priorities) ? p.priorities : [];
+          p.acoReservas = Array.isArray(p.acoReservas) ? p.acoReservas : [];
+          p.acoPricing = p.acoPricing || ACO_DEFAULT_PRICING;
           setData({ ...emptyData, ...p });
         }
       } catch (e) {}
@@ -594,6 +726,41 @@ function Painel({ session }) {
   };
   const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) } });
 
+  // ---- AcoHub: reservas e tabela de preços ----
+  const addReserva = (r) => setData((d) => ({ ...d, acoReservas: [...(d.acoReservas || []), { id: uid(), status: "orcamento", nota: false, createdAt: nowISO(), ...r }] }));
+  const editReserva = (id, patch) => setData((d) => ({ ...d, acoReservas: (d.acoReservas || []).map((r) => r.id === id ? { ...r, ...patch } : r) }));
+  const delReserva = (id) => setData((d) => ({
+    ...d,
+    acoReservas: (d.acoReservas || []).filter((r) => r.id !== id),
+    tasks: d.tasks.filter((t) => t.reservaId !== id),
+  }));
+  const setPricing = (novo) => setData((d) => ({ ...d, acoPricing: novo }));
+
+  // Garante que existe um "cliente" interno pro social do AcoHub
+  const ensureAcoClient = () => setData((d) => {
+    if (d.clients.find((c) => c.id === "__acohub__")) return d;
+    return { ...d, clients: [...d.clients, { id: "__acohub__", name: "AcoHub", socialMonths: [], links: [], creds: [], notes: "", hidden: true }] };
+  });
+  const updateAcoClient = (patch) => setData((d) => {
+    const existe = d.clients.find((c) => c.id === "__acohub__");
+    if (existe) return { ...d, clients: d.clients.map((c) => c.id === "__acohub__" ? { ...c, ...patch } : c) };
+    return { ...d, clients: [...d.clients, { id: "__acohub__", name: "AcoHub", socialMonths: [], links: [], creds: [], notes: "", hidden: true, ...patch }] };
+  });
+
+  // Ao confirmar, cria as 6 tarefas do processo (uma vez) vinculadas à reserva.
+  const gerarProcessoReserva = (reserva) => setData((d) => {
+    const jaTem = d.tasks.some((t) => t.reservaId === reserva.id);
+    if (jaTem) return d;
+    const refDate = reserva.date || TODAY;
+    const novas = ACO_PROCESSO.map((f) => ({
+      id: uid(), title: `${f.titulo} — ${reserva.cliente || "reserva"}`, area: "acohub", clientId: null,
+      scope: "pontual", deadline: refDate, estTime: f.est, urgency: "media", recurrence: "none",
+      done: false, status: "ativa", notes: f.notas, subtasks: [], createdAt: nowISO(), statusSince: nowISO(),
+      workDate: null, externalOwner: false, ownerName: "", reservaId: reserva.id,
+    }));
+    return { ...d, tasks: [...d.tasks, ...novas] };
+  };
+
   if (loading) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando seus dados...</div>;
   const sd = data.settings.stuckDays;
   const detailTask = detailId ? data.tasks.find((t) => t.id === detailId) : null;
@@ -654,7 +821,8 @@ function Painel({ session }) {
             {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} googleCalendars={googleCalendars} selectedCals={selectedCals} onToggleCal={toggleCal} onCarregarEventos={carregarEventos} />}
             {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
             {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
-            {["acohub", "novello", "pessoal", "freela"].includes(tab) && (
+            {tab === "acohub" && <AcoHubView data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} addReserva={addReserva} editReserva={editReserva} delReserva={delReserva} setPricing={setPricing} gerarProcessoReserva={gerarProcessoReserva} updateAcoClient={updateAcoClient} ensureAcoClient={ensureAcoClient} />}
+            {["novello", "pessoal", "freela"].includes(tab) && (
               <AreaView area={tab} data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} />
             )}
           </div>
@@ -1851,6 +2019,266 @@ function PostsView({ client, updateClient, clientTasks }) {
 }
 
 
+function copiar(txt, setMsg) {
+  try { navigator.clipboard.writeText(txt); if (setMsg) { setMsg("Copiado!"); setTimeout(() => setMsg(""), 1500); } } catch (_) {}
+}
+
+function ReservaForm({ pricing, onSave, onCancel, inicial }) {
+  const [r, setR] = useState(inicial || { espaco: "estudio", cliente: "", parceiro: "", tipo: "Captação de vídeo", date: TODAY, horaIni: "14:00", horaFim: "16:00", horas: 2, fds: false, foraHorario: false, primeira: false, valorManual: null });
+  const ch = (patch) => setR((p) => ({ ...p, ...patch }));
+
+  // recalcula horas a partir dos horários
+  const calcHoras = (ini, fim) => {
+    if (!ini || !fim) return r.horas;
+    const [hi, mi] = ini.split(":").map(Number);
+    const [hf, mf] = fim.split(":").map(Number);
+    const dif = (hf * 60 + mf - hi * 60 - mi) / 60;
+    return dif > 0 ? Math.round(dif * 2) / 2 : 0;
+  };
+  const setHorario = (patch) => {
+    const novo = { ...r, ...patch };
+    const horas = calcHoras(novo.horaIni, novo.horaFim);
+    const [hi] = (novo.horaIni || "").split(":").map(Number);
+    const [hf] = (novo.horaFim || "").split(":").map(Number);
+    const fora = hi < 8 || hf > 18 || (hf === 18 && Number((novo.horaFim || "").split(":")[1]) > 30);
+    setR({ ...novo, horas, foraHorario: fora });
+  };
+
+  const calc = calcReserva({ espaco: r.espaco, horas: r.horas, fds: r.fds, foraHorario: r.foraHorario, primeira: r.primeira }, pricing);
+  const valorTotal = r.valorManual != null ? r.valorManual : calc.total;
+
+  return (
+    <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <select value={r.espaco} onChange={(e) => ch({ espaco: e.target.value })} className="border border-slate-300 rounded-lg px-2 py-2 text-sm">
+          <option value="estudio">Estúdio</option>
+          <option value="sala">Sala de reunião</option>
+        </select>
+        <input value={r.tipo} onChange={(e) => ch({ tipo: e.target.value })} placeholder="Tipo (ex: Captação de vídeo)" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+        <input value={r.cliente} onChange={(e) => ch({ cliente: e.target.value })} placeholder="Cliente" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+        <input value={r.parceiro} onChange={(e) => ch({ parceiro: e.target.value })} placeholder="Parceiro (opcional)" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <div className="flex flex-col"><label className="text-xs text-slate-500 mb-0.5">Data</label><input type="date" value={r.date} onChange={(e) => { const d = fromKey(e.target.value); const dow = d.getDay(); setHorario({ date: e.target.value, fds: dow === 0 || dow === 6 }); }} className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm" /></div>
+        <div className="flex flex-col"><label className="text-xs text-slate-500 mb-0.5">Início</label><input type="time" value={r.horaIni} onChange={(e) => setHorario({ horaIni: e.target.value })} className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm" /></div>
+        <div className="flex flex-col"><label className="text-xs text-slate-500 mb-0.5">Fim</label><input type="time" value={r.horaFim} onChange={(e) => setHorario({ horaFim: e.target.value })} className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm" /></div>
+      </div>
+      <div className="flex flex-wrap gap-3 text-xs">
+        <span className="text-slate-500">{r.horas}h</span>
+        <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={r.fds} onChange={(e) => ch({ fds: e.target.checked })} className="accent-violet-600" /> Fim de semana</label>
+        <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={r.foraHorario} onChange={(e) => ch({ foraHorario: e.target.checked })} className="accent-violet-600" /> Fora de horário (+R${pricing.adicionalForaHorario})</label>
+        <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={r.primeira} onChange={(e) => ch({ primeira: e.target.checked })} className="accent-violet-600" /> 1ª reserva (-{pricing.descontoPrimeira}%)</label>
+      </div>
+      <div className="bg-white rounded-lg p-2 text-sm">
+        <div className="flex justify-between text-slate-500 text-xs"><span>Base ({r.horas}h)</span><span>R$ {calc.base.toFixed(2)}</span></div>
+        {calc.adicional > 0 && <div className="flex justify-between text-slate-500 text-xs"><span>Adicional fora de horário</span><span>R$ {calc.adicional.toFixed(2)}</span></div>}
+        {calc.desconto > 0 && <div className="flex justify-between text-green-600 text-xs"><span>Desconto 1ª reserva</span><span>- R$ {calc.desconto.toFixed(2)}</span></div>}
+        <div className="flex justify-between font-bold text-violet-800 mt-1 items-center">
+          <span>Total</span>
+          <div className="flex items-center gap-1">
+            <span className="text-xs text-slate-400">R$</span>
+            <input type="number" step="0.01" value={valorTotal} onChange={(e) => ch({ valorManual: Number(e.target.value) })} className="w-24 border border-slate-200 rounded px-1 py-0.5 text-right" />
+          </div>
+        </div>
+        {r.valorManual != null && <button onClick={() => ch({ valorManual: null })} className="text-xs text-slate-400 hover:text-violet-600">voltar ao cálculo automático</button>}
+      </div>
+      <div className="flex gap-2">
+        <button onClick={() => onSave({ ...r, horas: r.horas, valorTotal, valorCalculado: calc.total })} className="flex-1 bg-violet-600 text-white rounded-lg py-2 text-sm font-medium">Salvar reserva</button>
+        <button onClick={onCancel} className="px-4 bg-white border border-slate-300 rounded-lg py-2 text-sm">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function ReservaCard({ r, onEdit, onDelete, onAvancar, onGerarProcesso, pricing }) {
+  const [msg, setMsg] = useState("");
+  const [expand, setExpand] = useState(false);
+  const st = ACO_RES_STATUS[r.status] || {};
+  const ordem = ["orcamento", "confirmada", "realizada", "cobrada"];
+  const idx = ordem.indexOf(r.status);
+  const proximo = idx >= 0 && idx < ordem.length - 1 ? ordem[idx + 1] : null;
+
+  const avancar = () => {
+    if (!proximo) return;
+    onEdit(r.id, { status: proximo });
+    if (proximo === "confirmada") onGerarProcesso({ ...r, status: "confirmada" });
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-3 mb-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${st.bg} ${st.text}`}>{st.label}</span>
+        <span className="text-sm font-semibold text-slate-700 flex-1">{r.cliente || "(sem cliente)"}</span>
+        <span className="text-sm font-bold text-violet-700">R$ {(r.valorTotal ?? 0).toFixed(2)}</span>
+      </div>
+      <div className="flex items-center gap-x-3 gap-y-0.5 flex-wrap mt-1 text-xs text-slate-400">
+        <span>{ACO_ESPACOS[r.espaco]}</span>
+        {r.date && <span>{fmtBR(r.date)} {r.horaIni}-{r.horaFim}</span>}
+        <span>{r.horas}h{r.fds ? " · fds" : ""}</span>
+        {r.tipo && <span>{r.tipo}</span>}
+        {r.parceiro && <span>parceiro: {r.parceiro}</span>}
+        {r.nota && <span className="text-green-600">NF emitida</span>}
+      </div>
+
+      <div className="flex gap-1.5 flex-wrap mt-2">
+        {proximo && <button onClick={avancar} className="text-xs bg-violet-600 text-white rounded-lg px-2 py-1 font-medium">→ {ACO_RES_STATUS[proximo].label}</button>}
+        <button onClick={() => { copiar(textoOrcamento(r), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Copiar orçamento</button>
+        <button onClick={() => { copiar(textoAgenda(r), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Texto agenda</button>
+        <button onClick={() => { copiar(textoGuia(r), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Guia de uso</button>
+        <button onClick={() => { copiar(textoFinal(r), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Msg final</button>
+        <button onClick={() => setExpand(!expand)} className="text-xs text-slate-400 hover:text-violet-600 ml-auto">{expand ? "menos" : "ajustar"}</button>
+        <button onClick={() => onDelete(r.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+      </div>
+      {msg && <p className="text-xs text-green-600 mt-1">{msg}</p>}
+
+      {expand && (
+        <div className="mt-2 pt-2 border-t border-slate-100 space-y-2">
+          <p className="text-xs text-slate-500">Ajuste o que mudou na reserva real (horas, fim de semana, adicional) e o valor final.</p>
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="flex flex-col"><label className="text-slate-500 mb-0.5">Horas</label><input type="number" step="0.5" value={r.horas} onChange={(e) => onEdit(r.id, { horas: Number(e.target.value) })} className="border border-slate-200 rounded px-1 py-0.5" /></div>
+            <label className="flex items-center gap-1 mt-4"><input type="checkbox" checked={r.fds} onChange={(e) => onEdit(r.id, { fds: e.target.checked })} className="accent-violet-600" /> fds</label>
+            <label className="flex items-center gap-1 mt-4"><input type="checkbox" checked={r.foraHorario} onChange={(e) => onEdit(r.id, { foraHorario: e.target.checked })} className="accent-violet-600" /> fora horário</label>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <button onClick={() => { const c = calcReserva({ espaco: r.espaco, horas: r.horas, fds: r.fds, foraHorario: r.foraHorario, primeira: r.primeira }, pricing); onEdit(r.id, { valorTotal: c.total }); }} className="bg-white border border-slate-300 rounded px-2 py-1">Recalcular pela tabela</button>
+            <span className="text-slate-400">ou digite:</span>
+            <input type="number" step="0.01" value={r.valorTotal ?? 0} onChange={(e) => onEdit(r.id, { valorTotal: Number(e.target.value) })} className="w-24 border border-slate-200 rounded px-1 py-0.5" />
+          </div>
+          <div className="flex items-center gap-3 text-xs">
+            <label className="flex items-center gap-1"><input type="checkbox" checked={!!r.nota} onChange={(e) => onEdit(r.id, { nota: e.target.checked })} className="accent-green-600" /> Nota fiscal emitida</label>
+            <input value={r.pagamento || ""} onChange={(e) => onEdit(r.id, { pagamento: e.target.value })} placeholder="Forma de pagamento" className="border border-slate-200 rounded px-2 py-0.5 flex-1" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TabelaPrecos({ pricing, onSave }) {
+  const [p, setP] = useState(JSON.parse(JSON.stringify(pricing)));
+  const setVal = (espaco, periodo, campo, v) => setP((old) => ({ ...old, [espaco]: { ...old[espaco], [periodo]: { ...old[espaco][periodo], [campo]: Number(v) || 0 } } }));
+  const linhas = [{ k: "h1", l: "1 hora (total)" }, { k: "h2", l: "2 horas (por hora)" }, { k: "h3", l: "3 horas (por hora)" }, { k: "meio", l: "Meio período (4h)" }, { k: "dia", l: "Dia inteiro (8h)" }];
+  const bloco = (espaco, titulo) => (
+    <div className="mb-4">
+      <p className="text-sm font-semibold text-slate-700 mb-1">{titulo}</p>
+      <div className="grid grid-cols-3 gap-1 text-xs items-center">
+        <span className="text-slate-400" />
+        <span className="text-center text-slate-500 font-medium">Semana</span>
+        <span className="text-center text-slate-500 font-medium">Fim de semana</span>
+        {linhas.map((ln) => (
+          <>
+            <span key={`${espaco}-${ln.k}-l`} className="text-slate-500">{ln.l}</span>
+            <input key={`${espaco}-${ln.k}-s`} type="number" value={p[espaco].semana[ln.k]} onChange={(e) => setVal(espaco, "semana", ln.k, e.target.value)} className="border border-slate-200 rounded px-2 py-1 text-center" />
+            <input key={`${espaco}-${ln.k}-f`} type="number" value={p[espaco].fds[ln.k]} onChange={(e) => setVal(espaco, "fds", ln.k, e.target.value)} className="border border-slate-200 rounded px-2 py-1 text-center" />
+          </>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4">
+      {bloco("estudio", "Estúdio")}
+      {bloco("sala", "Sala de reunião")}
+      <div className="flex gap-4 items-end mb-3">
+        <div className="flex flex-col"><label className="text-xs text-slate-500 mb-0.5">Adicional fora de horário (R$)</label><input type="number" value={p.adicionalForaHorario} onChange={(e) => setP({ ...p, adicionalForaHorario: Number(e.target.value) || 0 })} className="border border-slate-200 rounded px-2 py-1 text-sm w-28" /></div>
+        <div className="flex flex-col"><label className="text-xs text-slate-500 mb-0.5">Desconto 1ª reserva (%)</label><input type="number" value={p.descontoPrimeira} onChange={(e) => setP({ ...p, descontoPrimeira: Number(e.target.value) || 0 })} className="border border-slate-200 rounded px-2 py-1 text-sm w-28" /></div>
+      </div>
+      <button onClick={() => onSave(p)} className="bg-violet-600 text-white rounded-lg px-4 py-2 text-sm font-medium">Salvar tabela</button>
+    </div>
+  );
+}
+
+function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, onOpen, addReserva, editReserva, delReserva, setPricing, gerarProcessoReserva, updateAcoClient, ensureAcoClient }) {
+  const [sub, setSub] = useState("reservas");
+  const [addingR, setAddingR] = useState(false);
+  const [addingT, setAddingT] = useState(false);
+  const reservas = data.acoReservas || [];
+  const pricing = data.acoPricing || ACO_DEFAULT_PRICING;
+  const tasks = data.tasks.filter((t) => t.area === "acohub");
+
+  const ativas = reservas.filter((r) => r.status !== "cobrada");
+  const cobradas = reservas.filter((r) => r.status === "cobrada");
+  const [showCobradas, setShowCobradas] = useState(false);
+
+  const ym = TODAY.slice(0, 7);
+  const doMes = reservas.filter((r) => (r.date || "").slice(0, 7) === ym);
+  const receitaMes = doMes.reduce((s, r) => s + (r.valorTotal || 0), 0);
+
+  const acoClient = data.clients.find((c) => c.id === "__acohub__") || { id: "__acohub__", name: "AcoHub", socialMonths: [], links: [], creds: [], notes: "" };
+
+  const abrirSocial = () => { ensureAcoClient(); setSub("social"); };
+
+  const SUBS = [
+    { id: "reservas", label: "Reservas" },
+    { id: "tabela", label: "Tabela de preços" },
+    { id: "tarefas", label: "Tarefas" },
+    { id: "social", label: "Redes sociais" },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-white rounded-2xl border border-slate-200 p-3">
+          <p className="text-2xl font-bold text-violet-800">{ativas.length}</p>
+          <p className="text-xs text-slate-500">reservas ativas</p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-3">
+          <p className="text-2xl font-bold text-green-700">R$ {receitaMes.toFixed(0)}</p>
+          <p className="text-xs text-slate-500">receita do mês</p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-3">
+          <p className="text-2xl font-bold text-slate-700">{tasks.filter((t) => !t.done).length}</p>
+          <p className="text-xs text-slate-500">tarefas abertas</p>
+        </div>
+      </div>
+
+      <div className="flex gap-1 overflow-x-auto">
+        {SUBS.map((s) => (
+          <button key={s.id} onClick={() => s.id === "social" ? abrirSocial() : setSub(s.id)} className={`text-sm px-3 py-1.5 rounded-lg border whitespace-nowrap ${sub === s.id ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-600 border-slate-200 hover:bg-violet-50"}`}>{s.label}</button>
+        ))}
+      </div>
+
+      {sub === "reservas" && (
+        <div className="space-y-2">
+          {!addingR && <button onClick={() => setAddingR(true)} className="flex items-center gap-1 text-violet-600 text-sm font-medium hover:text-violet-800"><Plus size={15} /> Nova reserva / orçamento</button>}
+          {addingR && <ReservaForm pricing={pricing} onSave={(r) => { addReserva(r); setAddingR(false); }} onCancel={() => setAddingR(false)} />}
+          {ativas.length === 0 && !addingR && <p className="text-sm text-slate-400">Nenhuma reserva ativa. Crie um orçamento acima.</p>}
+          {ativas.slice().sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((r) => (
+            <ReservaCard key={r.id} r={r} pricing={pricing} onEdit={editReserva} onDelete={delReserva} onGerarProcesso={gerarProcessoReserva} />
+          ))}
+          {cobradas.length > 0 && (
+            <div className="mt-2">
+              <button onClick={() => setShowCobradas(!showCobradas)} className="text-xs text-slate-400 hover:text-slate-600">{showCobradas ? "Ocultar" : "Ver"} cobradas ({cobradas.length})</button>
+              {showCobradas && cobradas.slice().sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((r) => (
+                <ReservaCard key={r.id} r={r} pricing={pricing} onEdit={editReserva} onDelete={delReserva} onGerarProcesso={gerarProcessoReserva} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {sub === "tabela" && <TabelaPrecos pricing={pricing} onSave={setPricing} />}
+
+      {sub === "tarefas" && (
+        <Section title="Tarefas do AcoHub" icon={Building2} action={
+          <button onClick={() => setAddingT(!addingT)} className="text-violet-600 text-sm flex items-center gap-1 hover:text-violet-800"><Plus size={15} /> Nova</button>
+        }>
+          {addingT && <div className="mb-3"><TaskForm area="acohub" clients={data.clients} onAdd={addTask} onClose={() => setAddingT(false)} /></div>}
+          {tasks.length === 0 && !addingT ? <p className="text-sm text-slate-400 py-2">Nenhuma tarefa por aqui ainda.</p> :
+            <TaskGroups tasks={tasks} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={false} />}
+        </Section>
+      )}
+
+      {sub === "social" && (
+        <div>
+          <ModeloSocialBox client={acoClient} addTask={addTask} updateClient={(id, patch) => updateAcoClient(patch)} />
+          <PostsView client={acoClient} updateClient={(id, patch) => updateAcoClient(patch)} clientTasks={tasks} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ClientInfo({ client, updateClient }) {
   const links = client.links || [];
   const creds = client.creds || [];
@@ -1931,7 +2359,7 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
   const openTab = (id) => { if (openClient === id) { setOpenClient(null); } else { setOpenClient(id); setView("demandas"); } };
   const startEdit = (c) => { setEditing(c.id); setEditName(c.name); };
   const saveEdit = (id) => { if (editName.trim()) updateClient(id, { name: editName.trim() }); setEditing(null); };
-  const sortedClients = [...data.clients].sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" }));
+  const sortedClients = [...data.clients].filter((c) => c.id !== "__acohub__" && !c.hidden).sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" }));
 
   return (
     <div className="space-y-4">
@@ -1943,7 +2371,7 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
           <button onClick={() => { if (newClient.trim()) { addClient(newClient.trim()); setNewClient(""); } }}
             className="bg-violet-600 text-white rounded-lg px-3 text-sm font-medium"><Plus size={16} /></button>
         </div>
-        {data.clients.length === 0 && <p className="text-sm text-slate-400">Adicione seus clientes para organizar as demandas.</p>}
+        {sortedClients.length === 0 && <p className="text-sm text-slate-400">Adicione seus clientes para organizar as demandas.</p>}
         {sortedClients.map((c) => {
           const ct = data.tasks.filter((t) => t.clientId === c.id);
           const pend = ct.filter((t) => !t.done).length;
