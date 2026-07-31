@@ -62,7 +62,7 @@ const weekOfMonth = (key) => {
 const TODAY_WEEK = weekOfMonth(TODAY);
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
 
-const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: ACO_DEFAULT_PRICING };
+const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: null };
 const migTasks = (ts) => (ts || []).map((t) => ({
   status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t,
   subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, externalOwner: false, ownerName: "", ...s })),
@@ -724,7 +724,7 @@ function Painel({ session }) {
       }),
     }));
   };
-  const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) } });
+  const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) }, acoPricing: p.acoPricing || ACO_DEFAULT_PRICING, acoReservas: Array.isArray(p.acoReservas) ? p.acoReservas : [] });
 
   // ---- AcoHub: reservas e tabela de preços ----
   const addReserva = (r) => setData((d) => ({ ...d, acoReservas: [...(d.acoReservas || []), { id: uid(), status: "orcamento", nota: false, createdAt: nowISO(), ...r }] }));
@@ -759,7 +759,8 @@ function Painel({ session }) {
       workDate: null, externalOwner: false, ownerName: "", reservaId: reserva.id,
     }));
     return { ...d, tasks: [...d.tasks, ...novas] };
-  });
+  };
+
   if (loading) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando seus dados...</div>;
   const sd = data.settings.stuckDays;
   const detailTask = detailId ? data.tasks.find((t) => t.id === detailId) : null;
@@ -787,7 +788,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v39</span>
+            <span className="text-[9px] text-slate-300 mt-1">v40</span>
           </div>
         </aside>
 
