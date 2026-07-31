@@ -759,7 +759,6 @@ function Painel({ session }) {
       workDate: null, externalOwner: false, ownerName: "", reservaId: reserva.id,
     }));
     return { ...d, tasks: [...d.tasks, ...novas] };
-  };
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando seus dados...</div>;
   const sd = data.settings.stuckDays;
