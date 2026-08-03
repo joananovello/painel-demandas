@@ -309,7 +309,10 @@ const ACO_PROCESSO = [
 
 // Ordem do fluxo de produção. O tempo restante de um post é a soma das etapas daqui pra frente.
 const STAGE_ORDER = ["em_copy", "add_conteudo", "criar_arte", "gravar", "editar", "alteracao", "aprovacao", "programado"];
-const STAGE_DONE = ["postado", "cancelado"];
+// Etapas que não consomem mais tempo: o trabalho já saiu das suas mãos.
+const STAGE_DONE = ["programado", "postado", "cancelado"];
+// Etapas que realmente dão trabalho, usadas na tabela de tempos das configurações.
+const STAGE_TRABALHO = STAGE_ORDER.filter((st) => !STAGE_DONE.includes(st));
 
 // Horas de cada etapa, por tipo de post. 0 = essa etapa não se aplica a esse tipo.
 const STAGE_HOURS_PADRAO = {
@@ -342,7 +345,7 @@ function postRemainingHours(post, tabelas) {
   const tabela = t[post.tipo] || t["Outro"] || STAGE_HOURS_PADRAO["Outro"];
   const i = STAGE_ORDER.indexOf(post.status);
   if (i === -1) return 0;
-  return STAGE_ORDER.slice(i).reduce((s, st) => s + (tabela[st] || 0), 0);
+  return STAGE_ORDER.slice(i).filter((st) => !STAGE_DONE.includes(st)).reduce((s, st) => s + (tabela[st] || 0), 0);
 }
 
 // Interpreta uma linha colada: extrai data (dd/mm ou dd/mm/aaaa), tipo (se houver) e descrição.
@@ -905,7 +908,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v43</span>
+            <span className="text-[9px] text-slate-300 mt-1">v44</span>
           </div>
         </aside>
 
@@ -965,7 +968,7 @@ function ConfiguracoesView({ data, setSetting, postHours, onSavePostHours, onClo
   const [msg, setMsg] = useState("");
 
   const setVal = (tipo, etapa, v) => setT((old) => ({ ...old, [tipo]: { ...old[tipo], [etapa]: Number(v) || 0 } }));
-  const totalDe = (tipo) => STAGE_ORDER.reduce((s, st) => s + (t[tipo]?.[st] || 0), 0);
+  const totalDe = (tipo) => STAGE_TRABALHO.reduce((s, st) => s + (t[tipo]?.[st] || 0), 0);
   const salvar = () => { onSavePostHours(t); setMsg("Tempos salvos. O cálculo do dia já está usando os novos valores."); setTimeout(() => setMsg(""), 2500); };
   const restaurar = () => { setT(mesclarHoras(null)); setMsg("Voltou aos valores originais. Clique em Salvar para confirmar."); };
 
@@ -1008,7 +1011,7 @@ function ConfiguracoesView({ data, setSetting, postHours, onSavePostHours, onClo
                 <thead>
                   <tr className="text-slate-500 border-b border-slate-200">
                     <th className="py-1 pr-2 text-left font-medium sticky left-0 bg-white">Tipo de post</th>
-                    {STAGE_ORDER.map((st) => (
+                    {STAGE_TRABALHO.map((st) => (
                       <th key={st} className="py-1 px-1 font-medium text-center w-16">{POST_STATUS[st]?.label || st}</th>
                     ))}
                     <th className="py-1 pl-2 font-medium text-center w-14">Total</th>
@@ -1018,7 +1021,7 @@ function ConfiguracoesView({ data, setSetting, postHours, onSavePostHours, onClo
                   {POST_TIPOS.map((tipo) => (
                     <tr key={tipo} className="border-b border-slate-50">
                       <td className="py-1 pr-2 font-medium text-slate-600 whitespace-nowrap sticky left-0 bg-white">{tipo}</td>
-                      {STAGE_ORDER.map((st) => (
+                      {STAGE_TRABALHO.map((st) => (
                         <td key={st} className="py-1 px-1">
                           <input type="number" min="0" step="0.25" value={t[tipo]?.[st] ?? 0}
                             onChange={(e) => setVal(tipo, st, e.target.value)}
@@ -2027,6 +2030,7 @@ function SocialMonthBlock({ m, isArchive, clientTasks, postHours, onUpdateMonth,
   const linked = clientTasks.find((t) => t.id === m.taskId);
   const posts = (m.posts || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   const postado = posts.filter((p) => p.status === "postado").length;
+  const programado = posts.filter((p) => p.status === "programado").length;
   const aprovacao = posts.filter((p) => p.status === "aprovacao").length;
   const [showPaste, setShowPaste] = useState(false);
   const [pasteText, setPasteText] = useState("");
@@ -2043,6 +2047,7 @@ function SocialMonthBlock({ m, isArchive, clientTasks, postHours, onUpdateMonth,
         <span className="text-sm font-semibold text-slate-700 flex-1">{m.name}</span>
         <span className="text-xs text-slate-400">{posts.length} posts</span>
         {aprovacao > 0 && <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{aprovacao} p/ aprovar</span>}
+        {programado > 0 && <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">{programado} programados</span>}
         <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">{postado} postados</span>
         <button onClick={() => onCopy(m)} title="Copiar mês formatado" className="text-slate-300 hover:text-violet-600"><Copy size={13} /></button>
         {isArchive
