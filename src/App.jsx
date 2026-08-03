@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2 } from "lucide-react";
+import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2, Contact, RotateCcw } from "lucide-react";
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 
@@ -62,7 +62,7 @@ const weekOfMonth = (key) => {
 const TODAY_WEEK = weekOfMonth(TODAY);
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
 
-const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: null };
+const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: null, acoClientes: [], acoTextos: null };
 const migTasks = (ts) => (ts || []).map((t) => ({
   status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t,
   subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, externalOwner: false, ownerName: "", ...s })),
@@ -112,6 +112,22 @@ const ACO_RES_STATUS = {
 
 const ACO_ESPACOS = { estudio: "Estúdio", sala: "Sala de reunião" };
 
+// ---------- AcoHub: cadastro de clientes ----------
+// Guardamos os dados cadastrais uma vez só. Depois é só digitar o nome que o resto vem junto.
+const ACO_CLIENTE_VAZIO = { nome: "", doc: "", endereco: "", cep: "", email: "", telefone: "", obs: "" };
+const cadastroCompleto = (c) => !!(c && (c.nome || "").trim() && (c.doc || "").trim() && (c.email || "").trim());
+const acharCadastro = (clientes, nome, id) => {
+  const lista = clientes || [];
+  if (id) { const porId = lista.find((c) => c.id === id); if (porId) return porId; }
+  const n = (nome || "").trim().toLowerCase();
+  if (!n) return null;
+  return lista.find((c) => (c.nome || "").trim().toLowerCase() === n) || null;
+};
+const linhaCadastro = (c) => {
+  if (!c) return "";
+  return [c.nome, c.doc, [c.endereco, c.cep].filter(Boolean).join(" - "), c.email, c.telefone].filter(Boolean).join("\n");
+};
+
 // Calcula o valor de uma reserva pela tabela de preços.
 function calcReserva({ espaco, horas, fds, foraHorario, primeira }, pricing = ACO_DEFAULT_PRICING) {
   const tab = (pricing[espaco] || pricing.estudio)[fds ? "fds" : "semana"];
@@ -135,39 +151,29 @@ function calcReserva({ espaco, horas, fds, foraHorario, primeira }, pricing = AC
   return { base, adicional, subtotal, desconto: desc, total: Math.round((subtotal - desc) * 100) / 100 };
 }
 
-// Textos padrão do AcoHub (com placeholders preenchidos por reserva)
-function textoOrcamento(r) {
-  const dt = r.date ? fmtBR(r.date) : "[DATA]";
-  const hr = (r.horaIni && r.horaFim) ? `das ${r.horaIni} às ${r.horaFim}` : "[HORÁRIO]";
-  return `AGENDAMENTO ACOHUB ${r.espaco === "sala" ? "SALA DE REUNIÃO" : "ESTÚDIO"}
-Data: ${dt} ${hr}.
-Cliente: ${r.cliente || "[CLIENTE]"}
-${r.parceiro ? `Parceiro: ${r.parceiro}\n` : ""}Tipo: ${r.tipo || "[TIPO]"}
-Valor total: R$ ${(r.valorTotal ?? 0).toFixed(2).replace(".", ",")}
+// ---------- AcoHub: textos padrão editáveis ----------
+// Os textos ficam salvos nos dados (data.acoTextos) e podem ser editados na aba Textos,
+// dentro do AcoHub. As chaves entre chaves são trocadas pelos dados da reserva.
+const ACO_TEXTOS_PADRAO = {
+  orcamento: `AGENDAMENTO ACOHUB {espaco_maiusculo}
+Data: {data} das {hora_ini} às {hora_fim}.
+Cliente: {cliente}
+Tipo: {tipo}
+Valor total: R$ {valor}
 Opções de Pagamento:
 Cartão de crédito: Pagamento antecipado (aplicável taxa de parcelamento se necessário).
 Pix: 50% no momento da reserva e 50% no dia do agendamento.
 Observação: O agendamento será confirmado somente após a confirmação do pagamento.
-Dados Cadastrais:
-Nome completo ou Razão Social.
-CPF ou CNPJ.
-Endereço completo (incluindo CEP).
-Email`;
-}
+{dados_cadastrais}`,
 
-function textoAgenda(r) {
-  return `[ACO] ${r.cliente || "Cliente"} - ${r.tipo || "Foto/Vídeo"}`;
-}
+  agenda: `[ACO] {cliente} - {tipo}`,
 
-function textoGuia(r) {
-  const dt = r.date ? fmtBR(r.date) : "[DATA]";
-  const hr = (r.horaIni && r.horaFim) ? `${r.horaIni} às ${r.horaFim}` : "[HORÁRIO]";
-  return `Guia de Uso do Estúdio – AcoHub
+  guia: `Guia de Uso do Estúdio – AcoHub
 Oi! Obrigado por agendar o estúdio do AcoHub. Aqui estão algumas informações para você aproveitar o espaço da melhor forma.
 
 📍 Detalhes do seu agendamento
-Data: ${dt}
-Horário: ${hr}
+Data: {data}
+Horário: {hora_ini} às {hora_fim}
 Local: R. Tapajós, 401 - Sala 36 - 3º andar - Centro, Pato Branco - PR
 Dúvidas no dia? 46 99140-1012
 
@@ -195,18 +201,100 @@ Chegue pelo menos 10 minutos antes para organizar tudo com calma. O tempo de uso
 
 Se precisar de algo, é só chamar.
 WhatsApp: 46 99140-1012
-Te esperamos no AcoHub.`;
-}
+Te esperamos no AcoHub.`,
 
-function textoFinal(r) {
-  return `Oi, ${r.cliente || "[NOME]"}!
+  final: `Oi, {cliente}!
 Obrigado por utilizar o estúdio do AcoHub. Esperamos que tenha sido uma boa experiência para você!
 Se puder, queremos saber sua opinião para continuarmos melhorando. É rapidinho, só responder esse formulário: https://forms.gle/GaB2bhtmbkkGaz7t5
 Ah, e sobre o pagamento, como prefere fazer?
 Ah, e caso seja possível, pode deixar uma avaliação sobre nós lá no Google?
 https://g.page/r/CU5vdvd_DXSuEAI/review
 
-Se precisar do estúdio novamente, é só chamar. Estamos à disposição!`;
+Se precisar do estúdio novamente, é só chamar. Estamos à disposição!`,
+
+  // Trecho usado dentro de {dados_cadastrais} quando o cliente ainda não tem cadastro salvo
+  pedirDados: `Dados Cadastrais:
+Nome completo ou Razão Social.
+CPF ou CNPJ.
+Endereço completo (incluindo CEP).
+Email`,
+
+  // Trecho usado quando o cliente já está cadastrado
+  temDados: `Seus dados cadastrais já estão com a gente ({cadastro_nome} - {cadastro_doc}). Se algo mudou, é só avisar.`,
+};
+
+// Cada texto que aparece na aba Textos, com nome e explicação.
+const ACO_TEXTOS_INFO = [
+  { key: "orcamento", label: "Orçamento", desc: "Enviado ao cliente para fechar a reserva." },
+  { key: "agenda", label: "Texto da agenda", desc: "Título curto do evento no Google Agenda." },
+  { key: "guia", label: "Guia de uso", desc: "Orientações enviadas antes do dia." },
+  { key: "final", label: "Mensagem final", desc: "Enviada depois do agendamento, com feedback e pagamento." },
+  { key: "temDados", label: "Cliente já cadastrado", desc: "Entra no lugar de {dados_cadastrais} quando o cadastro já existe." },
+  { key: "pedirDados", label: "Pedido de dados cadastrais", desc: "Entra no lugar de {dados_cadastrais} na primeira reserva do cliente." },
+];
+
+// Lista de marcadores disponíveis, mostrada na tela de edição.
+const ACO_PLACEHOLDERS = [
+  { tag: "{cliente}", desc: "nome do cliente" },
+  { tag: "{tipo}", desc: "tipo da reserva" },
+  { tag: "{data}", desc: "data (dd/mm)" },
+  { tag: "{data_completa}", desc: "data (dd/mm/aaaa)" },
+  { tag: "{hora_ini}", desc: "horário de início" },
+  { tag: "{hora_fim}", desc: "horário de término" },
+  { tag: "{horas}", desc: "total de horas" },
+  { tag: "{espaco}", desc: "Estúdio ou Sala de reunião" },
+  { tag: "{espaco_maiusculo}", desc: "ESTÚDIO ou SALA DE REUNIÃO" },
+  { tag: "{valor}", desc: "valor total (ex: 320,00)" },
+  { tag: "{parceiro}", desc: "parceiro, se houver" },
+  { tag: "{pagamento}", desc: "forma de pagamento anotada" },
+  { tag: "{dados_cadastrais}", desc: "bloco automático de dados do cliente" },
+  { tag: "{cadastro_nome}", desc: "nome do cadastro salvo" },
+  { tag: "{cadastro_doc}", desc: "CPF ou CNPJ do cadastro" },
+  { tag: "{cadastro_email}", desc: "e-mail do cadastro" },
+  { tag: "{cadastro_telefone}", desc: "telefone do cadastro" },
+  { tag: "{cadastro_endereco}", desc: "endereço do cadastro" },
+  { tag: "{cadastro_cep}", desc: "CEP do cadastro" },
+];
+
+// Troca os {marcadores} pelos dados reais da reserva.
+function preencherTexto(modelo, r, cadastro) {
+  if (!modelo) return "";
+  const dataCompleta = r.date ? fromKey(r.date).toLocaleDateString("pt-BR") : "[DATA]";
+  const valores = {
+    cliente: r.cliente || "[CLIENTE]",
+    tipo: r.tipo || "[TIPO]",
+    data: r.date ? fmtBR(r.date) : "[DATA]",
+    data_completa: dataCompleta,
+    hora_ini: r.horaIni || "[INÍCIO]",
+    hora_fim: r.horaFim || "[FIM]",
+    horas: String(r.horas ?? ""),
+    espaco: ACO_ESPACOS[r.espaco] || "Estúdio",
+    espaco_maiusculo: (ACO_ESPACOS[r.espaco] || "Estúdio").toUpperCase(),
+    valor: (r.valorTotal ?? 0).toFixed(2).replace(".", ","),
+    parceiro: r.parceiro || "",
+    pagamento: r.pagamento || "",
+    cadastro_nome: (cadastro && cadastro.nome) || r.cliente || "",
+    cadastro_doc: (cadastro && cadastro.doc) || "",
+    cadastro_email: (cadastro && cadastro.email) || "",
+    cadastro_telefone: (cadastro && cadastro.telefone) || "",
+    cadastro_endereco: (cadastro && cadastro.endereco) || "",
+    cadastro_cep: (cadastro && cadastro.cep) || "",
+  };
+  return modelo.replace(/\{(\w+)\}/g, (todo, chave) => (chave in valores ? valores[chave] : todo));
+}
+
+// Monta um texto a partir dos modelos salvos (ou dos padrões, se ainda não houver).
+function montarTexto(chave, r, cadastro, textos) {
+  const t = { ...ACO_TEXTOS_PADRAO, ...(textos || {}) };
+  let modelo = t[chave] || "";
+  if (modelo.includes("{dados_cadastrais}")) {
+    const bloco = preencherTexto(cadastroCompleto(cadastro) ? t.temDados : t.pedirDados, r, cadastro);
+    modelo = modelo.replace(/\{dados_cadastrais\}/g, bloco);
+  }
+  // Linha do parceiro some sozinha quando não há parceiro
+  let saida = preencherTexto(modelo, r, cadastro);
+  if (!r.parceiro) saida = saida.split("\n").filter((l) => !/^\s*Parceiro:\s*$/i.test(l)).join("\n");
+  return saida;
 }
 
 // Checklist do processo: 6 fases, viram tarefas com tempo estimado.
@@ -570,7 +658,9 @@ function Painel({ session }) {
           p.settings = { workHours: 8, stuckDays: 7, ...(p.settings || {}) };
           p.priorities = Array.isArray(p.priorities) ? p.priorities : [];
           p.acoReservas = Array.isArray(p.acoReservas) ? p.acoReservas : [];
+          p.acoClientes = Array.isArray(p.acoClientes) ? p.acoClientes : [];
           p.acoPricing = p.acoPricing || ACO_DEFAULT_PRICING;
+          p.acoTextos = { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) };
           setData({ ...emptyData, ...p });
         }
       } catch (e) {}
@@ -724,7 +814,7 @@ function Painel({ session }) {
       }),
     }));
   };
-  const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) }, acoPricing: p.acoPricing || ACO_DEFAULT_PRICING, acoReservas: Array.isArray(p.acoReservas) ? p.acoReservas : [] });
+  const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) }, acoPricing: p.acoPricing || ACO_DEFAULT_PRICING, acoReservas: Array.isArray(p.acoReservas) ? p.acoReservas : [], acoClientes: Array.isArray(p.acoClientes) ? p.acoClientes : [], acoTextos: { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) } });
 
   // ---- AcoHub: reservas e tabela de preços ----
   const addReserva = (r) => setData((d) => ({ ...d, acoReservas: [...(d.acoReservas || []), { id: uid(), status: "orcamento", nota: false, createdAt: nowISO(), ...r }] }));
@@ -735,6 +825,17 @@ function Painel({ session }) {
     tasks: d.tasks.filter((t) => t.reservaId !== id),
   }));
   const setPricing = (novo) => setData((d) => ({ ...d, acoPricing: novo }));
+  const setTexto = (chave, valor) => setData((d) => ({ ...d, acoTextos: { ...ACO_TEXTOS_PADRAO, ...(d.acoTextos || {}), [chave]: valor } }));
+  const resetTexto = (chave) => setData((d) => ({ ...d, acoTextos: { ...ACO_TEXTOS_PADRAO, ...(d.acoTextos || {}), [chave]: ACO_TEXTOS_PADRAO[chave] } }));
+
+  // ---- AcoHub: cadastro de clientes ----
+  const addAcoCliente = (c) => { const id = uid(); setData((d) => ({ ...d, acoClientes: [...(d.acoClientes || []), { id, criadoEm: nowISO(), ...ACO_CLIENTE_VAZIO, ...c }] })); return id; };
+  const editAcoCliente = (id, patch) => setData((d) => ({ ...d, acoClientes: (d.acoClientes || []).map((c) => c.id === id ? { ...c, ...patch } : c) }));
+  const delAcoCliente = (id) => setData((d) => ({
+    ...d,
+    acoClientes: (d.acoClientes || []).filter((c) => c.id !== id),
+    acoReservas: (d.acoReservas || []).map((r) => r.clienteId === id ? { ...r, clienteId: null } : r),
+  }));
 
   // Garante que existe um "cliente" interno pro social do AcoHub
   const ensureAcoClient = () => setData((d) => {
@@ -760,6 +861,9 @@ function Painel({ session }) {
     }));
     return { ...d, tasks: [...d.tasks, ...novas] };
   });
+
+  // Desfaz a geração do processo: apaga as tarefas criadas para aquela reserva.
+  const removerProcessoReserva = (reservaId) => setData((d) => ({ ...d, tasks: d.tasks.filter((t) => t.reservaId !== reservaId) }));
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando seus dados...</div>;
   const sd = data.settings.stuckDays;
@@ -788,7 +892,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v40</span>
+            <span className="text-[9px] text-slate-300 mt-1">v42</span>
           </div>
         </aside>
 
@@ -822,7 +926,7 @@ function Painel({ session }) {
             {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} googleCalendars={googleCalendars} selectedCals={selectedCals} onToggleCal={toggleCal} onCarregarEventos={carregarEventos} />}
             {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
             {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
-            {tab === "acohub" && <AcoHubView data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} addReserva={addReserva} editReserva={editReserva} delReserva={delReserva} setPricing={setPricing} gerarProcessoReserva={gerarProcessoReserva} updateAcoClient={updateAcoClient} ensureAcoClient={ensureAcoClient} />}
+            {tab === "acohub" && <AcoHubView data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} addReserva={addReserva} editReserva={editReserva} delReserva={delReserva} setPricing={setPricing} setTexto={setTexto} resetTexto={resetTexto} gerarProcessoReserva={gerarProcessoReserva} removerProcessoReserva={removerProcessoReserva} updateAcoClient={updateAcoClient} ensureAcoClient={ensureAcoClient} addAcoCliente={addAcoCliente} editAcoCliente={editAcoCliente} delAcoCliente={delAcoCliente} />}
             {["novello", "pessoal", "freela"].includes(tab) && (
               <AreaView area={tab} data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} />
             )}
@@ -2019,14 +2123,102 @@ function PostsView({ client, updateClient, clientTasks }) {
   );
 }
 
-
 function copiar(txt, setMsg) {
   try { navigator.clipboard.writeText(txt); if (setMsg) { setMsg("Copiado!"); setTimeout(() => setMsg(""), 1500); } } catch (_) {}
 }
 
-function ReservaForm({ pricing, onSave, onCancel, inicial }) {
-  const [r, setR] = useState(inicial || { espaco: "estudio", cliente: "", parceiro: "", tipo: "Captação de vídeo", date: TODAY, horaIni: "14:00", horaFim: "16:00", horas: 2, fds: false, foraHorario: false, primeira: false, valorManual: null });
+// ---------- AcoHub: cadastro de clientes ----------
+function AcoClienteForm({ inicial, onSalvar, onCancelar }) {
+  const [c, setC] = useState({ ...ACO_CLIENTE_VAZIO, ...(inicial || {}) });
+  const ch = (patch) => setC((p) => ({ ...p, ...patch }));
+  return (
+    <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 space-y-2">
+      <input autoFocus value={c.nome} onChange={(e) => ch({ nome: e.target.value })} placeholder="Nome completo ou Razão Social" className="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+      <div className="grid grid-cols-2 gap-2">
+        <input value={c.doc} onChange={(e) => ch({ doc: e.target.value })} placeholder="CPF ou CNPJ" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+        <input value={c.telefone} onChange={(e) => ch({ telefone: e.target.value })} placeholder="Telefone / WhatsApp" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+      </div>
+      <input value={c.email} onChange={(e) => ch({ email: e.target.value })} placeholder="E-mail" className="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+      <div className="grid grid-cols-3 gap-2">
+        <input value={c.endereco} onChange={(e) => ch({ endereco: e.target.value })} placeholder="Endereço completo" className="col-span-2 border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+        <input value={c.cep} onChange={(e) => ch({ cep: e.target.value })} placeholder="CEP" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+      </div>
+      <textarea value={c.obs || ""} onChange={(e) => ch({ obs: e.target.value })} placeholder="Observações (opcional)" className="w-full h-14 border border-slate-300 rounded-lg p-2 text-sm" />
+      <div className="flex gap-2">
+        <button onClick={() => { if ((c.nome || "").trim()) onSalvar({ ...c, nome: c.nome.trim() }); }} className="flex-1 bg-violet-600 text-white rounded-lg py-2 text-sm font-medium">Salvar cadastro</button>
+        <button onClick={onCancelar} className="px-4 bg-white border border-slate-300 rounded-lg py-2 text-sm">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function AcoClientesView({ clientes, reservas, onAdd, onEdit, onDelete }) {
+  const [busca, setBusca] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [msg, setMsg] = useState("");
+
+  const lista = (clientes || [])
+    .filter((c) => (c.nome || "").toLowerCase().includes(busca.trim().toLowerCase()))
+    .sort((a, b) => (a.nome || "").localeCompare(b.nome || "", "pt-BR", { sensitivity: "base" }));
+
+  const resumo = (id) => {
+    const rs = (reservas || []).filter((r) => r.clienteId === id);
+    return { n: rs.length, total: rs.reduce((s, r) => s + (r.valorTotal || 0), 0) };
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2 items-center">
+        <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar cliente" className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+        <button onClick={() => { setAdding(!adding); setEditId(null); }} className="bg-violet-600 text-white rounded-lg px-3 py-2 text-sm font-medium flex items-center gap-1 whitespace-nowrap"><Plus size={15} /> Novo</button>
+      </div>
+
+      {adding && <AcoClienteForm onSalvar={(c) => { onAdd(c); setAdding(false); }} onCancelar={() => setAdding(false)} />}
+
+      {lista.length === 0 && !adding && (
+        <p className="text-sm text-slate-400">Nenhum cliente cadastrado ainda. O cadastro também é criado sozinho quando você preenche os dados numa reserva nova.</p>
+      )}
+
+      {lista.map((c) => {
+        const rs = resumo(c.id);
+        const completo = cadastroCompleto(c);
+        return editId === c.id ? (
+          <AcoClienteForm key={c.id} inicial={c} onSalvar={(novo) => { onEdit(c.id, novo); setEditId(null); }} onCancelar={() => setEditId(null)} />
+        ) : (
+          <div key={c.id} className="bg-white rounded-xl border border-slate-200 p-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Contact size={15} className="text-violet-400 shrink-0" />
+              <span className="text-sm font-semibold text-slate-700 flex-1">{c.nome}</span>
+              {!completo && <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">cadastro incompleto</span>}
+              {rs.n > 0 && <span className="text-xs text-slate-400">{rs.n} reserva{rs.n > 1 ? "s" : ""} · R$ {rs.total.toFixed(0)}</span>}
+              <button onClick={() => copiar(linhaCadastro(c), setMsg)} title="Copiar dados cadastrais" className="text-slate-300 hover:text-violet-600"><Copy size={14} /></button>
+              <button onClick={() => { setEditId(c.id); setAdding(false); }} className="text-slate-300 hover:text-violet-600"><Pencil size={14} /></button>
+              <button onClick={() => onDelete(c.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={15} /></button>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs text-slate-400">
+              {c.doc && <span>{c.doc}</span>}
+              {c.email && <span>{c.email}</span>}
+              {c.telefone && <span>{c.telefone}</span>}
+              {(c.endereco || c.cep) && <span>{[c.endereco, c.cep].filter(Boolean).join(" - ")}</span>}
+            </div>
+            {c.obs && <p className="text-xs text-slate-500 mt-1">{c.obs}</p>}
+          </div>
+        );
+      })}
+      {msg && <p className="text-xs text-green-600">{msg}</p>}
+    </div>
+  );
+}
+
+function ReservaForm({ pricing, clientes = [], onAddCliente, onSave, onCancel, inicial }) {
+  const [r, setR] = useState(inicial || { espaco: "estudio", cliente: "", clienteId: null, parceiro: "", tipo: "Captação de vídeo", date: TODAY, horaIni: "14:00", horaFim: "16:00", horas: 2, fds: false, foraHorario: false, primeira: false, valorManual: null });
+  const [cad, setCad] = useState(ACO_CLIENTE_VAZIO);
   const ch = (patch) => setR((p) => ({ ...p, ...patch }));
+
+  // Cliente já cadastrado? Basta o nome bater com um cadastro salvo.
+  const encontrado = acharCadastro(clientes, r.cliente, r.clienteId);
+  const chCad = (patch) => setCad((p) => ({ ...p, ...patch }));
 
   // recalcula horas a partir dos horários
   const calcHoras = (ini, fim) => {
@@ -2048,6 +2240,15 @@ function ReservaForm({ pricing, onSave, onCancel, inicial }) {
   const calc = calcReserva({ espaco: r.espaco, horas: r.horas, fds: r.fds, foraHorario: r.foraHorario, primeira: r.primeira }, pricing);
   const valorTotal = r.valorManual != null ? r.valorManual : calc.total;
 
+  const salvar = () => {
+    let clienteId = encontrado ? encontrado.id : null;
+    // Primeira vez desse cliente: se preencheu os dados, cria o cadastro agora e guarda para sempre.
+    if (!clienteId && ((cad.doc || "").trim() || (cad.email || "").trim()) && onAddCliente) {
+      clienteId = onAddCliente({ ...cad, nome: (cad.nome || "").trim() || r.cliente.trim() });
+    }
+    onSave({ ...r, clienteId, cliente: r.cliente.trim(), horas: r.horas, valorTotal, valorCalculado: calc.total });
+  };
+
   return (
     <div className="bg-violet-50 border border-violet-200 rounded-xl p-3 space-y-2">
       <div className="grid grid-cols-2 gap-2">
@@ -2056,9 +2257,37 @@ function ReservaForm({ pricing, onSave, onCancel, inicial }) {
           <option value="sala">Sala de reunião</option>
         </select>
         <input value={r.tipo} onChange={(e) => ch({ tipo: e.target.value })} placeholder="Tipo (ex: Captação de vídeo)" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
-        <input value={r.cliente} onChange={(e) => ch({ cliente: e.target.value })} placeholder="Cliente" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+        <div className="flex flex-col">
+          <input list="aco-clientes-lista" value={r.cliente} onChange={(e) => ch({ cliente: e.target.value, clienteId: null })} placeholder="Cliente (digite o nome)" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
+          <datalist id="aco-clientes-lista">
+            {(clientes || []).map((c) => <option key={c.id} value={c.nome} />)}
+          </datalist>
+        </div>
         <input value={r.parceiro} onChange={(e) => ch({ parceiro: e.target.value })} placeholder="Parceiro (opcional)" className="border border-slate-300 rounded-lg px-2 py-2 text-sm" />
       </div>
+
+      {encontrado ? (
+        <div className="bg-white rounded-lg border border-green-200 p-2 text-xs">
+          <p className="text-green-700 font-medium flex items-center gap-1"><Check size={12} /> Cliente já cadastrado, não precisa pedir os dados de novo.</p>
+          <p className="text-slate-500 mt-0.5">{[encontrado.doc, encontrado.email, encontrado.telefone].filter(Boolean).join(" · ")}</p>
+        </div>
+      ) : r.cliente.trim() ? (
+        <div className="bg-white rounded-lg border border-amber-200 p-2 space-y-1.5">
+          <p className="text-xs text-amber-700 font-medium">Primeira reserva desse cliente. Preencha os dados cadastrais uma vez só, depois é só digitar o nome.</p>
+          <input value={cad.nome} onChange={(e) => chCad({ nome: e.target.value })} placeholder={`Nome completo ou Razão Social (padrão: ${r.cliente.trim()})`} className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-xs" />
+          <div className="grid grid-cols-2 gap-1.5">
+            <input value={cad.doc} onChange={(e) => chCad({ doc: e.target.value })} placeholder="CPF ou CNPJ" className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs" />
+            <input value={cad.telefone} onChange={(e) => chCad({ telefone: e.target.value })} placeholder="Telefone" className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs" />
+          </div>
+          <input value={cad.email} onChange={(e) => chCad({ email: e.target.value })} placeholder="E-mail" className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-xs" />
+          <div className="grid grid-cols-3 gap-1.5">
+            <input value={cad.endereco} onChange={(e) => chCad({ endereco: e.target.value })} placeholder="Endereço completo" className="col-span-2 border border-slate-300 rounded-lg px-2 py-1.5 text-xs" />
+            <input value={cad.cep} onChange={(e) => chCad({ cep: e.target.value })} placeholder="CEP" className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs" />
+          </div>
+          <p className="text-xs text-slate-400">Se ainda não tem os dados, pode deixar em branco e cadastrar depois na aba Clientes.</p>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-3 gap-2">
         <div className="flex flex-col"><label className="text-xs text-slate-500 mb-0.5">Data</label><input type="date" value={r.date} onChange={(e) => { const d = fromKey(e.target.value); const dow = d.getDay(); setHorario({ date: e.target.value, fds: dow === 0 || dow === 6 }); }} className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm" /></div>
         <div className="flex flex-col"><label className="text-xs text-slate-500 mb-0.5">Início</label><input type="time" value={r.horaIni} onChange={(e) => setHorario({ horaIni: e.target.value })} className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm" /></div>
@@ -2084,31 +2313,35 @@ function ReservaForm({ pricing, onSave, onCancel, inicial }) {
         {r.valorManual != null && <button onClick={() => ch({ valorManual: null })} className="text-xs text-slate-400 hover:text-violet-600">voltar ao cálculo automático</button>}
       </div>
       <div className="flex gap-2">
-        <button onClick={() => onSave({ ...r, horas: r.horas, valorTotal, valorCalculado: calc.total })} className="flex-1 bg-violet-600 text-white rounded-lg py-2 text-sm font-medium">Salvar reserva</button>
+        <button onClick={salvar} className="flex-1 bg-violet-600 text-white rounded-lg py-2 text-sm font-medium">Salvar reserva</button>
         <button onClick={onCancel} className="px-4 bg-white border border-slate-300 rounded-lg py-2 text-sm">Cancelar</button>
       </div>
     </div>
   );
 }
 
-function ReservaCard({ r, onEdit, onDelete, onAvancar, onGerarProcesso, pricing }) {
+function ReservaCard({ r, onEdit, onDelete, onGerarProcesso, onRemoverProcesso, temProcesso, pricing, cadastro, textos }) {
   const [msg, setMsg] = useState("");
   const [expand, setExpand] = useState(false);
   const st = ACO_RES_STATUS[r.status] || {};
   const ordem = ["orcamento", "confirmada", "realizada", "cobrada"];
   const idx = ordem.indexOf(r.status);
   const proximo = idx >= 0 && idx < ordem.length - 1 ? ordem[idx + 1] : null;
+  const anterior = idx > 0 ? ordem[idx - 1] : null;
 
-  const avancar = () => {
-    if (!proximo) return;
-    onEdit(r.id, { status: proximo });
-    if (proximo === "confirmada") onGerarProcesso({ ...r, status: "confirmada" });
+  // Mudar de status é livre, para frente e para trás. Ao confirmar, gera o processo (uma vez só).
+  const mudarStatus = (novo) => {
+    if (!novo || novo === r.status) return;
+    onEdit(r.id, { status: novo });
+    if (novo === "confirmada") onGerarProcesso({ ...r, status: "confirmada" });
   };
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-3 mb-2">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${st.bg} ${st.text}`}>{st.label}</span>
+        <select value={r.status} onChange={(e) => mudarStatus(e.target.value)} title="Trocar status (pode voltar)" className={`text-xs px-2 py-0.5 rounded-full font-medium border-0 cursor-pointer ${st.bg} ${st.text}`}>
+          {Object.entries(ACO_RES_STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
         <span className="text-sm font-semibold text-slate-700 flex-1">{r.cliente || "(sem cliente)"}</span>
         <span className="text-sm font-bold text-violet-700">R$ {(r.valorTotal ?? 0).toFixed(2)}</span>
       </div>
@@ -2119,14 +2352,18 @@ function ReservaCard({ r, onEdit, onDelete, onAvancar, onGerarProcesso, pricing 
         {r.tipo && <span>{r.tipo}</span>}
         {r.parceiro && <span>parceiro: {r.parceiro}</span>}
         {r.nota && <span className="text-green-600">NF emitida</span>}
+        {cadastroCompleto(cadastro)
+          ? <span className="text-green-600 flex items-center gap-0.5"><Contact size={11} /> cadastro ok</span>
+          : <span className="text-amber-600 flex items-center gap-0.5"><Contact size={11} /> sem cadastro</span>}
       </div>
 
       <div className="flex gap-1.5 flex-wrap mt-2">
-        {proximo && <button onClick={avancar} className="text-xs bg-violet-600 text-white rounded-lg px-2 py-1 font-medium">→ {ACO_RES_STATUS[proximo].label}</button>}
-        <button onClick={() => { copiar(textoOrcamento(r), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Copiar orçamento</button>
-        <button onClick={() => { copiar(textoAgenda(r), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Texto agenda</button>
-        <button onClick={() => { copiar(textoGuia(r), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Guia de uso</button>
-        <button onClick={() => { copiar(textoFinal(r), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Msg final</button>
+        {anterior && <button onClick={() => mudarStatus(anterior)} title={`Voltar para ${ACO_RES_STATUS[anterior].label}`} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1 flex items-center gap-1"><RotateCcw size={11} /> {ACO_RES_STATUS[anterior].label}</button>}
+        {proximo && <button onClick={() => mudarStatus(proximo)} className="text-xs bg-violet-600 text-white rounded-lg px-2 py-1 font-medium">→ {ACO_RES_STATUS[proximo].label}</button>}
+        <button onClick={() => { copiar(montarTexto("orcamento", r, cadastro, textos), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Copiar orçamento</button>
+        <button onClick={() => { copiar(montarTexto("agenda", r, cadastro, textos), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Texto agenda</button>
+        <button onClick={() => { copiar(montarTexto("guia", r, cadastro, textos), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Guia de uso</button>
+        <button onClick={() => { copiar(montarTexto("final", r, cadastro, textos), setMsg); }} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1">Msg final</button>
         <button onClick={() => setExpand(!expand)} className="text-xs text-slate-400 hover:text-violet-600 ml-auto">{expand ? "menos" : "ajustar"}</button>
         <button onClick={() => onDelete(r.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
       </div>
@@ -2134,20 +2371,34 @@ function ReservaCard({ r, onEdit, onDelete, onAvancar, onGerarProcesso, pricing 
 
       {expand && (
         <div className="mt-2 pt-2 border-t border-slate-100 space-y-2">
-          <p className="text-xs text-slate-500">Ajuste o que mudou na reserva real (horas, fim de semana, adicional) e o valor final.</p>
+          <p className="text-xs text-slate-500">Ajuste o que mudou na reserva real (cliente, horas, fim de semana, adicional) e o valor final.</p>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="flex flex-col"><label className="text-slate-500 mb-0.5">Cliente</label><input value={r.cliente || ""} onChange={(e) => onEdit(r.id, { cliente: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5" /></div>
+            <div className="flex flex-col"><label className="text-slate-500 mb-0.5">Tipo</label><input value={r.tipo || ""} onChange={(e) => onEdit(r.id, { tipo: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5" /></div>
+            <div className="flex flex-col"><label className="text-slate-500 mb-0.5">Data</label><input type="date" value={r.date || ""} onChange={(e) => onEdit(r.id, { date: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5" /></div>
+            <div className="flex gap-1">
+              <div className="flex flex-col flex-1"><label className="text-slate-500 mb-0.5">Início</label><input type="time" value={r.horaIni || ""} onChange={(e) => onEdit(r.id, { horaIni: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5 w-full" /></div>
+              <div className="flex flex-col flex-1"><label className="text-slate-500 mb-0.5">Fim</label><input type="time" value={r.horaFim || ""} onChange={(e) => onEdit(r.id, { horaFim: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5 w-full" /></div>
+            </div>
+          </div>
           <div className="grid grid-cols-3 gap-2 text-xs">
             <div className="flex flex-col"><label className="text-slate-500 mb-0.5">Horas</label><input type="number" step="0.5" value={r.horas} onChange={(e) => onEdit(r.id, { horas: Number(e.target.value) })} className="border border-slate-200 rounded px-1 py-0.5" /></div>
             <label className="flex items-center gap-1 mt-4"><input type="checkbox" checked={r.fds} onChange={(e) => onEdit(r.id, { fds: e.target.checked })} className="accent-violet-600" /> fds</label>
             <label className="flex items-center gap-1 mt-4"><input type="checkbox" checked={r.foraHorario} onChange={(e) => onEdit(r.id, { foraHorario: e.target.checked })} className="accent-violet-600" /> fora horário</label>
           </div>
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex items-center gap-2 text-xs flex-wrap">
             <button onClick={() => { const c = calcReserva({ espaco: r.espaco, horas: r.horas, fds: r.fds, foraHorario: r.foraHorario, primeira: r.primeira }, pricing); onEdit(r.id, { valorTotal: c.total }); }} className="bg-white border border-slate-300 rounded px-2 py-1">Recalcular pela tabela</button>
             <span className="text-slate-400">ou digite:</span>
             <input type="number" step="0.01" value={r.valorTotal ?? 0} onChange={(e) => onEdit(r.id, { valorTotal: Number(e.target.value) })} className="w-24 border border-slate-200 rounded px-1 py-0.5" />
           </div>
-          <div className="flex items-center gap-3 text-xs">
+          <div className="flex items-center gap-3 text-xs flex-wrap">
             <label className="flex items-center gap-1"><input type="checkbox" checked={!!r.nota} onChange={(e) => onEdit(r.id, { nota: e.target.checked })} className="accent-green-600" /> Nota fiscal emitida</label>
             <input value={r.pagamento || ""} onChange={(e) => onEdit(r.id, { pagamento: e.target.value })} placeholder="Forma de pagamento" className="border border-slate-200 rounded px-2 py-0.5 flex-1" />
+          </div>
+          <div className="flex items-center gap-2 text-xs flex-wrap">
+            {temProcesso
+              ? <button onClick={() => onRemoverProcesso(r.id)} className="text-red-500 hover:text-red-700 flex items-center gap-1"><Trash2 size={11} /> Apagar as tarefas do processo desta reserva</button>
+              : <button onClick={() => onGerarProcesso(r)} className="text-violet-600 hover:text-violet-800 flex items-center gap-1"><Plus size={11} /> Gerar as tarefas do processo</button>}
           </div>
         </div>
       )}
@@ -2167,11 +2418,11 @@ function TabelaPrecos({ pricing, onSave }) {
         <span className="text-center text-slate-500 font-medium">Semana</span>
         <span className="text-center text-slate-500 font-medium">Fim de semana</span>
         {linhas.map((ln) => (
-          <>
-            <span key={`${espaco}-${ln.k}-l`} className="text-slate-500">{ln.l}</span>
-            <input key={`${espaco}-${ln.k}-s`} type="number" value={p[espaco].semana[ln.k]} onChange={(e) => setVal(espaco, "semana", ln.k, e.target.value)} className="border border-slate-200 rounded px-2 py-1 text-center" />
-            <input key={`${espaco}-${ln.k}-f`} type="number" value={p[espaco].fds[ln.k]} onChange={(e) => setVal(espaco, "fds", ln.k, e.target.value)} className="border border-slate-200 rounded px-2 py-1 text-center" />
-          </>
+          <div key={`${espaco}-${ln.k}`} className="contents">
+            <span className="text-slate-500">{ln.l}</span>
+            <input type="number" value={p[espaco].semana[ln.k]} onChange={(e) => setVal(espaco, "semana", ln.k, e.target.value)} className="border border-slate-200 rounded px-2 py-1 text-center" />
+            <input type="number" value={p[espaco].fds[ln.k]} onChange={(e) => setVal(espaco, "fds", ln.k, e.target.value)} className="border border-slate-200 rounded px-2 py-1 text-center" />
+          </div>
         ))}
       </div>
     </div>
@@ -2189,12 +2440,88 @@ function TabelaPrecos({ pricing, onSave }) {
   );
 }
 
-function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, onOpen, addReserva, editReserva, delReserva, setPricing, gerarProcessoReserva, updateAcoClient, ensureAcoClient }) {
+// Tela de edição dos textos padrão, com prévia usando uma reserva real.
+function TextosPadraoView({ textos, reservas = [], clientes = [], onSave, onReset }) {
+  const [aberto, setAberto] = useState("orcamento");
+  const [msg, setMsg] = useState("");
+  const areaRef = useRef(null);
+
+  // Prévia: usa a reserva mais recente; se não houver nenhuma, usa um exemplo.
+  const exemplo = reservas.length
+    ? [...reservas].sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0]
+    : { cliente: "Maria Exemplo", tipo: "Captação de vídeo", date: TODAY, horaIni: "14:00", horaFim: "16:00", horas: 2, espaco: "estudio", valorTotal: 200, parceiro: "", pagamento: "" };
+  const cadExemplo = acharCadastro(clientes, exemplo.cliente, exemplo.clienteId);
+
+  const info = ACO_TEXTOS_INFO.find((i) => i.key === aberto);
+  const valor = textos[aberto] || "";
+  const alterado = valor !== ACO_TEXTOS_PADRAO[aberto];
+  const previa = aberto === "temDados" || aberto === "pedirDados"
+    ? preencherTexto(valor, exemplo, cadExemplo)
+    : montarTexto(aberto, exemplo, cadExemplo, { ...textos, [aberto]: valor });
+
+  // Insere o marcador onde o cursor está parado dentro do campo.
+  const inserir = (tag) => {
+    const el = areaRef.current;
+    if (!el) { onSave(aberto, valor + tag); return; }
+    const ini = el.selectionStart ?? valor.length;
+    const fim = el.selectionEnd ?? valor.length;
+    const novo = valor.slice(0, ini) + tag + valor.slice(fim);
+    onSave(aberto, novo);
+    setTimeout(() => { try { el.focus(); el.setSelectionRange(ini + tag.length, ini + tag.length); } catch (_) {} }, 0);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-white rounded-xl border border-slate-200 p-3">
+        <p className="text-sm text-slate-600">Edite aqui os textos que você copia nas reservas. O que estiver entre chaves é trocado automaticamente pelos dados de cada reserva na hora de copiar.</p>
+      </div>
+
+      <div className="flex gap-1 flex-wrap">
+        {ACO_TEXTOS_INFO.map((i) => (
+          <button key={i.key} onClick={() => setAberto(i.key)} className={`text-xs px-3 py-1.5 rounded-lg border ${aberto === i.key ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-600 border-slate-200 hover:bg-violet-50"}`}>
+            {i.label}{textos[i.key] !== ACO_TEXTOS_PADRAO[i.key] && <span className="ml-1 text-amber-400">•</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold text-slate-700 flex-1">{info?.label}</span>
+          {alterado && <span className="text-xs text-amber-600">editado por você</span>}
+          <button onClick={() => copiar(previa, setMsg)} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1 flex items-center gap-1"><Copy size={11} /> Copiar prévia</button>
+          <button onClick={() => { if (alterado) onReset(aberto); }} disabled={!alterado} className={`text-xs rounded-lg px-2 py-1 flex items-center gap-1 border ${alterado ? "bg-white border-slate-300 text-slate-600 hover:text-red-600" : "border-slate-100 text-slate-300 cursor-default"}`}><RotateCcw size={11} /> Voltar ao original</button>
+        </div>
+        <p className="text-xs text-slate-400">{info?.desc}</p>
+
+        <textarea ref={areaRef} value={valor} onChange={(e) => onSave(aberto, e.target.value)} className="w-full h-64 border border-slate-300 rounded-lg p-2 text-sm font-mono" />
+
+        <div>
+          <p className="text-xs font-semibold text-violet-600 uppercase tracking-wide mb-1">Marcadores (clique para inserir onde o cursor está)</p>
+          <div className="flex flex-wrap gap-1">
+            {ACO_PLACEHOLDERS.map((p) => (
+              <button key={p.tag} onClick={() => inserir(p.tag)} title={p.desc} className="text-xs bg-violet-50 text-violet-700 border border-violet-100 rounded px-1.5 py-0.5 hover:bg-violet-100 font-mono">{p.tag}</button>
+            ))}
+          </div>
+        </div>
+        {msg && <p className="text-xs text-green-600">{msg}</p>}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-3">
+        <p className="text-xs font-semibold text-violet-600 uppercase tracking-wide mb-1">Prévia {reservas.length ? "(com a reserva mais recente)" : "(com dados de exemplo)"}</p>
+        <pre className="text-xs text-slate-600 whitespace-pre-wrap bg-slate-50 rounded-lg p-2 border border-slate-100">{previa}</pre>
+      </div>
+    </div>
+  );
+}
+
+function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, onOpen, addReserva, editReserva, delReserva, setPricing, setTexto, resetTexto, gerarProcessoReserva, removerProcessoReserva, updateAcoClient, ensureAcoClient, addAcoCliente, editAcoCliente, delAcoCliente }) {
   const [sub, setSub] = useState("reservas");
   const [addingR, setAddingR] = useState(false);
   const [addingT, setAddingT] = useState(false);
   const reservas = data.acoReservas || [];
+  const acoClientes = data.acoClientes || [];
   const pricing = data.acoPricing || ACO_DEFAULT_PRICING;
+  const textos = { ...ACO_TEXTOS_PADRAO, ...(data.acoTextos || {}) };
   const tasks = data.tasks.filter((t) => t.area === "acohub");
 
   const ativas = reservas.filter((r) => r.status !== "cobrada");
@@ -2208,17 +2535,21 @@ function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, 
   const acoClient = data.clients.find((c) => c.id === "__acohub__") || { id: "__acohub__", name: "AcoHub", socialMonths: [], links: [], creds: [], notes: "" };
 
   const abrirSocial = () => { ensureAcoClient(); setSub("social"); };
+  const temProcesso = (id) => data.tasks.some((t) => t.reservaId === id);
+  const cadDe = (r) => acharCadastro(acoClientes, r.cliente, r.clienteId);
 
   const SUBS = [
     { id: "reservas", label: "Reservas" },
+    { id: "clientes", label: "Clientes" },
     { id: "tabela", label: "Tabela de preços" },
+    { id: "textos", label: "Textos padrão" },
     { id: "tarefas", label: "Tarefas" },
     { id: "social", label: "Redes sociais" },
   ];
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-4 gap-3">
         <div className="bg-white rounded-2xl border border-slate-200 p-3">
           <p className="text-2xl font-bold text-violet-800">{ativas.length}</p>
           <p className="text-xs text-slate-500">reservas ativas</p>
@@ -2231,6 +2562,10 @@ function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, 
           <p className="text-2xl font-bold text-slate-700">{tasks.filter((t) => !t.done).length}</p>
           <p className="text-xs text-slate-500">tarefas abertas</p>
         </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-3">
+          <p className="text-2xl font-bold text-violet-800">{acoClientes.length}</p>
+          <p className="text-xs text-slate-500">clientes cadastrados</p>
+        </div>
       </div>
 
       <div className="flex gap-1 overflow-x-auto">
@@ -2242,23 +2577,29 @@ function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, 
       {sub === "reservas" && (
         <div className="space-y-2">
           {!addingR && <button onClick={() => setAddingR(true)} className="flex items-center gap-1 text-violet-600 text-sm font-medium hover:text-violet-800"><Plus size={15} /> Nova reserva / orçamento</button>}
-          {addingR && <ReservaForm pricing={pricing} onSave={(r) => { addReserva(r); setAddingR(false); }} onCancel={() => setAddingR(false)} />}
+          {addingR && <ReservaForm pricing={pricing} clientes={acoClientes} onAddCliente={addAcoCliente} onSave={(r) => { addReserva(r); setAddingR(false); }} onCancel={() => setAddingR(false)} />}
           {ativas.length === 0 && !addingR && <p className="text-sm text-slate-400">Nenhuma reserva ativa. Crie um orçamento acima.</p>}
           {ativas.slice().sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((r) => (
-            <ReservaCard key={r.id} r={r} pricing={pricing} onEdit={editReserva} onDelete={delReserva} onGerarProcesso={gerarProcessoReserva} />
+            <ReservaCard key={r.id} r={r} pricing={pricing} cadastro={cadDe(r)} textos={textos} temProcesso={temProcesso(r.id)} onEdit={editReserva} onDelete={delReserva} onGerarProcesso={gerarProcessoReserva} onRemoverProcesso={removerProcessoReserva} />
           ))}
           {cobradas.length > 0 && (
             <div className="mt-2">
               <button onClick={() => setShowCobradas(!showCobradas)} className="text-xs text-slate-400 hover:text-slate-600">{showCobradas ? "Ocultar" : "Ver"} cobradas ({cobradas.length})</button>
               {showCobradas && cobradas.slice().sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((r) => (
-                <ReservaCard key={r.id} r={r} pricing={pricing} onEdit={editReserva} onDelete={delReserva} onGerarProcesso={gerarProcessoReserva} />
+                <ReservaCard key={r.id} r={r} pricing={pricing} cadastro={cadDe(r)} textos={textos} temProcesso={temProcesso(r.id)} onEdit={editReserva} onDelete={delReserva} onGerarProcesso={gerarProcessoReserva} onRemoverProcesso={removerProcessoReserva} />
               ))}
             </div>
           )}
         </div>
       )}
 
+      {sub === "clientes" && (
+        <AcoClientesView clientes={acoClientes} reservas={reservas} onAdd={addAcoCliente} onEdit={editAcoCliente} onDelete={delAcoCliente} />
+      )}
+
       {sub === "tabela" && <TabelaPrecos pricing={pricing} onSave={setPricing} />}
+
+      {sub === "textos" && <TextosPadraoView textos={textos} reservas={reservas} clientes={acoClientes} onSave={setTexto} onReset={resetTexto} />}
 
       {sub === "tarefas" && (
         <Section title="Tarefas do AcoHub" icon={Building2} action={
@@ -2574,6 +2915,8 @@ function Relatorio({ data, onRestore }) {
   const horasTotal = mt.reduce((s, t) => s + (t.estTime || 0), 0);
   const horasDone = done.reduce((s, t) => s + (t.estTime || 0), 0);
   const meetings = data.meetings.filter((m) => (m.date || "").slice(0, 7) === ym).sort((a, b) => a.date.localeCompare(b.date));
+  const reservasMes = (data.acoReservas || []).filter((r) => (r.date || "").slice(0, 7) === ym).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const receitaMes = reservasMes.reduce((s, r) => s + (r.valorTotal || 0), 0);
 
   const groups = [];
   [...data.clients].sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" })).forEach((c) => {
@@ -2643,6 +2986,20 @@ function Relatorio({ data, onRestore }) {
         );
       })}
 
+      {reservasMes.length > 0 && (
+        <Section title="Reservas do AcoHub" icon={Building2}>
+          {reservasMes.map((r) => (
+            <div key={r.id} className="flex items-center gap-3 py-1 text-sm border-b border-slate-100 last:border-0">
+              <span className="text-xs font-semibold text-violet-700 w-12">{fmtBR(r.date)}</span>
+              <span className="flex-1">{r.cliente || "(sem cliente)"} <span className="text-xs text-slate-400">{ACO_ESPACOS[r.espaco]} · {r.horas}h</span></span>
+              <span className="text-xs text-slate-400">{ACO_RES_STATUS[r.status]?.label}</span>
+              <span className="text-sm font-semibold text-slate-600 w-20 text-right">R$ {(r.valorTotal ?? 0).toFixed(2)}</span>
+            </div>
+          ))}
+          <div className="flex justify-end mt-2 text-sm font-bold text-violet-800">Total: R$ {receitaMes.toFixed(2)}</div>
+        </Section>
+      )}
+
       {meetings.length > 0 && (
         <Section title="Reuniões do mês" icon={Calendar}>
           {meetings.map((m) => (
@@ -2702,7 +3059,7 @@ function BackupBox({ data, onRestore }) {
       </div>
       {open && (
         <div className="mt-3 space-y-3">
-          <p className="text-xs text-slate-500">Backup de tudo (clientes, demandas, subtarefas, reuniões, links e acessos). Guarde num arquivo seguro. Para restaurar, cole o conteúdo no campo de baixo.</p>
+          <p className="text-xs text-slate-500">Backup de tudo (clientes, demandas, subtarefas, reuniões, reservas, cadastros, links e acessos). Guarde num arquivo seguro. Para restaurar, cole o conteúdo no campo de baixo.</p>
           <div className="flex gap-2">
             <button onClick={copy} className="flex items-center gap-1 bg-violet-600 text-white rounded-lg px-3 py-2 text-sm"><Copy size={14} /> Copiar</button>
             <button onClick={download} className="flex items-center gap-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm"><Download size={14} /> Baixar .json</button>
