@@ -62,7 +62,7 @@ const weekOfMonth = (key) => {
 const TODAY_WEEK = weekOfMonth(TODAY);
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
 
-const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: null, acoClientes: [], acoTextos: null };
+const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: null, acoClientes: [], acoTextos: null, postHours: null };
 const migTasks = (ts) => (ts || []).map((t) => ({
   status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t,
   subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, externalOwner: false, ownerName: "", ...s })),
@@ -312,7 +312,7 @@ const STAGE_ORDER = ["em_copy", "add_conteudo", "criar_arte", "gravar", "editar"
 const STAGE_DONE = ["postado", "cancelado"];
 
 // Horas de cada etapa, por tipo de post. 0 = essa etapa não se aplica a esse tipo.
-const STAGE_HOURS = {
+const STAGE_HOURS_PADRAO = {
   "Arte única":      { em_copy: 0.5,  add_conteudo: 0.25, criar_arte: 1,    gravar: 0,   editar: 0,   alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
   "Carrossel":       { em_copy: 0.75, add_conteudo: 0.25, criar_arte: 1.5,  gravar: 0,   editar: 0,   alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
   "Reels":           { em_copy: 0.5,  add_conteudo: 0.25, criar_arte: 0,    gravar: 1,   editar: 1.5, alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
@@ -323,12 +323,23 @@ const STAGE_HOURS = {
   "Outro":           { em_copy: 0.5,  add_conteudo: 0.25, criar_arte: 0.75, gravar: 0,   editar: 0,   alteracao: 0.5,  aprovacao: 0.25, programado: 0.25 },
 };
 
+// Junta a tabela salva pela usuária com a padrão, garantindo que nenhum tipo ou etapa falte.
+function mesclarHoras(salvas) {
+  const saida = {};
+  for (const tipo of POST_TIPOS) {
+    saida[tipo] = { ...(STAGE_HOURS_PADRAO[tipo] || STAGE_HOURS_PADRAO["Outro"]), ...((salvas || {})[tipo] || {}) };
+  }
+  return saida;
+}
+
 // Quanto ainda falta de trabalho num post, dado o tipo e o status atual.
-function postRemainingHours(post) {
+// A tabela de horas vem das configurações; se não vier, usa a padrão.
+function postRemainingHours(post, tabelas) {
   if (!post || post.externalOwner) return 0;
   if (STAGE_DONE.includes(post.status)) return 0;
   if (typeof post.estTime === "number" && post.estTime > 0) return post.estTime; // override manual
-  const tabela = STAGE_HOURS[post.tipo] || STAGE_HOURS["Outro"];
+  const t = tabelas || STAGE_HOURS_PADRAO;
+  const tabela = t[post.tipo] || t["Outro"] || STAGE_HOURS_PADRAO["Outro"];
   const i = STAGE_ORDER.indexOf(post.status);
   if (i === -1) return 0;
   return STAGE_ORDER.slice(i).reduce((s, st) => s + (tabela[st] || 0), 0);
@@ -464,13 +475,13 @@ function collectUnits(tasks) {
   return units;
 }
 
-function collectPostUnits(clients) {
+function collectPostUnits(clients, tabelas) {
   const units = [];
   for (const c of clients || []) {
     for (const m of c.socialMonths || []) {
       if (m.done) continue;
       for (const p of m.posts || []) {
-        const horas = postRemainingHours(p);
+        const horas = postRemainingHours(p, tabelas);
         if (!p.date || horas <= 0) continue;
         units.push({
           id: `post::${c.id}::${m.id}::${p.id}`,
@@ -486,12 +497,12 @@ function collectPostUnits(clients) {
   return units;
 }
 
-function buildSchedule(tasks, meetings, workHours, clients = []) {
+function buildSchedule(tasks, meetings, workHours, clients = [], tabelas) {
   const meetingHours = {};
   meetings.forEach((m) => { meetingHours[m.date] = (meetingHours[m.date] || 0) + (m.durationMin || 0) / 60; });
   const capOf = (k) => Math.max(0, workHours - (meetingHours[k] || 0));
 
-  const units = [...collectUnits(tasks), ...collectPostUnits(clients)];
+  const units = [...collectUnits(tasks), ...collectPostUnits(clients, tabelas)];
   const perUnitToday = {};
   const perDayHours = {};
 
@@ -661,6 +672,7 @@ function Painel({ session }) {
           p.acoClientes = Array.isArray(p.acoClientes) ? p.acoClientes : [];
           p.acoPricing = p.acoPricing || ACO_DEFAULT_PRICING;
           p.acoTextos = { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) };
+          p.postHours = mesclarHoras(p.postHours);
           setData({ ...emptyData, ...p });
         }
       } catch (e) {}
@@ -743,7 +755,7 @@ function Painel({ session }) {
   const podeDesfazer = historyRef.current.length > 0;
   const podeRefazer = futureRef.current.length > 0;
 
-  const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours, data.clients), [data]);
+  const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours, data.clients, mesclarHoras(data.postHours)), [data]);
 
   const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, externalOwner: false, ownerName: "", ...t }] }));
   const editTask = (id, patch) => setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
@@ -779,6 +791,7 @@ function Painel({ session }) {
   const addMeeting = (m) => setData((d) => ({ ...d, meetings: [...d.meetings, { id: uid(), ...m }] }));
   const editMeeting = (id, patch) => setData((d) => ({ ...d, meetings: d.meetings.map((m) => (m.id === id ? { ...m, ...patch } : m)) }));
   const delMeeting = (id) => setData((d) => ({ ...d, meetings: d.meetings.filter((m) => m.id !== id) }));
+  const setPostHours = (novo) => setData((d) => ({ ...d, postHours: novo }));
   const setSetting = (k, v) => setData((d) => ({ ...d, settings: { ...d.settings, [k]: v } }));
   const togglePriority = (id) => setData((d) => {
     const cur = d.priorities || [];
@@ -814,7 +827,7 @@ function Painel({ session }) {
       }),
     }));
   };
-  const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) }, acoPricing: p.acoPricing || ACO_DEFAULT_PRICING, acoReservas: Array.isArray(p.acoReservas) ? p.acoReservas : [], acoClientes: Array.isArray(p.acoClientes) ? p.acoClientes : [], acoTextos: { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) } });
+  const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) }, acoPricing: p.acoPricing || ACO_DEFAULT_PRICING, acoReservas: Array.isArray(p.acoReservas) ? p.acoReservas : [], acoClientes: Array.isArray(p.acoClientes) ? p.acoClientes : [], acoTextos: { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) }, postHours: mesclarHoras(p.postHours) });
 
   // ---- AcoHub: reservas e tabela de preços ----
   const addReserva = (r) => setData((d) => ({ ...d, acoReservas: [...(d.acoReservas || []), { id: uid(), status: "orcamento", nota: false, createdAt: nowISO(), ...r }] }));
@@ -892,7 +905,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v42</span>
+            <span className="text-[9px] text-slate-300 mt-1">v43</span>
           </div>
         </aside>
 
@@ -939,18 +952,93 @@ function Painel({ session }) {
       )}
 
       {showSettings && (
-        <Modal onClose={() => setShowSettings(false)} title="Configurações">
-          <label className="block text-sm font-medium mb-1">Horas úteis por dia</label>
-          <input type="number" min="1" max="16" step="0.5" value={data.settings.workHours}
-            onChange={(e) => setSetting("workHours", Number(e.target.value) || 8)}
-            className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-4" />
-          <label className="block text-sm font-medium mb-1">Avisar "parada" após quantos dias</label>
-          <input type="number" min="1" max="60" value={data.settings.stuckDays}
-            onChange={(e) => setSetting("stuckDays", Number(e.target.value) || 7)}
-            className="w-full border border-slate-300 rounded-lg px-3 py-2" />
-          <p className="text-xs text-slate-500 mt-2">Demandas em espera ou sem prazo ganham um aviso laranja depois desse tempo paradas.</p>
-        </Modal>
+        <ConfiguracoesView data={data} setSetting={setSetting} postHours={data.postHours} onSavePostHours={setPostHours} onClose={() => setShowSettings(false)} />
       )}
+    </div>
+  );
+}
+
+// Tela de configurações, com abas: geral e tempo de produção dos posts.
+function ConfiguracoesView({ data, setSetting, postHours, onSavePostHours, onClose }) {
+  const [aba, setAba] = useState("geral");
+  const [t, setT] = useState(() => mesclarHoras(postHours));
+  const [msg, setMsg] = useState("");
+
+  const setVal = (tipo, etapa, v) => setT((old) => ({ ...old, [tipo]: { ...old[tipo], [etapa]: Number(v) || 0 } }));
+  const totalDe = (tipo) => STAGE_ORDER.reduce((s, st) => s + (t[tipo]?.[st] || 0), 0);
+  const salvar = () => { onSavePostHours(t); setMsg("Tempos salvos. O cálculo do dia já está usando os novos valores."); setTimeout(() => setMsg(""), 2500); };
+  const restaurar = () => { setT(mesclarHoras(null)); setMsg("Voltou aos valores originais. Clique em Salvar para confirmar."); };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-30 flex items-start justify-center p-4 z-50 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-xl p-5 w-full max-w-3xl my-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><Settings size={16} className="text-violet-500" /> Configurações</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+
+        <div className="flex gap-1 mb-4">
+          {[{ id: "geral", label: "Geral" }, { id: "posts", label: "Tempo de produção dos posts" }].map((x) => (
+            <button key={x.id} onClick={() => setAba(x.id)} className={`text-sm px-3 py-1.5 rounded-lg border ${aba === x.id ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-600 border-slate-200 hover:bg-violet-50"}`}>{x.label}</button>
+          ))}
+        </div>
+
+        {aba === "geral" && (
+          <div className="max-w-sm">
+            <label className="block text-sm font-medium mb-1">Horas úteis por dia</label>
+            <input type="number" min="1" max="16" step="0.5" value={data.settings.workHours}
+              onChange={(e) => setSetting("workHours", Number(e.target.value) || 8)}
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-4" />
+            <label className="block text-sm font-medium mb-1">Avisar "parada" após quantos dias</label>
+            <input type="number" min="1" max="60" value={data.settings.stuckDays}
+              onChange={(e) => setSetting("stuckDays", Number(e.target.value) || 7)}
+              className="w-full border border-slate-300 rounded-lg px-3 py-2" />
+            <p className="text-xs text-slate-500 mt-2">Demandas em espera ou sem prazo ganham um aviso laranja depois desse tempo paradas.</p>
+          </div>
+        )}
+
+        {aba === "posts" && (
+          <div>
+            <p className="text-xs text-slate-500 mb-3">
+              Quanto tempo cada etapa leva, por tipo de post. Deixe 0 nas etapas que não se aplicam (Reels não tem criar arte, por exemplo).
+              O painel soma as etapas que ainda faltam para saber quanto trabalho resta em cada post. Um post com tempo preenchido na mão ignora esta tabela.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="text-slate-500 border-b border-slate-200">
+                    <th className="py-1 pr-2 text-left font-medium sticky left-0 bg-white">Tipo de post</th>
+                    {STAGE_ORDER.map((st) => (
+                      <th key={st} className="py-1 px-1 font-medium text-center w-16">{POST_STATUS[st]?.label || st}</th>
+                    ))}
+                    <th className="py-1 pl-2 font-medium text-center w-14">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {POST_TIPOS.map((tipo) => (
+                    <tr key={tipo} className="border-b border-slate-50">
+                      <td className="py-1 pr-2 font-medium text-slate-600 whitespace-nowrap sticky left-0 bg-white">{tipo}</td>
+                      {STAGE_ORDER.map((st) => (
+                        <td key={st} className="py-1 px-1">
+                          <input type="number" min="0" step="0.25" value={t[tipo]?.[st] ?? 0}
+                            onChange={(e) => setVal(tipo, st, e.target.value)}
+                            className={`w-full border rounded px-1 py-1 text-center ${(t[tipo]?.[st] || 0) === 0 ? "border-slate-100 text-slate-300" : "border-slate-200 text-slate-700"}`} />
+                        </td>
+                      ))}
+                      <td className="py-1 pl-2 text-center font-semibold text-violet-700">{totalDe(tipo)}h</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center gap-2 mt-4 flex-wrap">
+              <button onClick={salvar} className="bg-violet-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-violet-700">Salvar tempos</button>
+              <button onClick={restaurar} className="bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm flex items-center gap-1"><RotateCcw size={13} /> Voltar aos valores originais</button>
+              {msg && <span className="text-xs text-green-600">{msg}</span>}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1185,7 +1273,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
   const priorityTasks = priorities.map((id) => {
     if (String(id).startsWith("post::")) {
       const u = sched.units.find((x) => x.id === id);
-      if (!u || postRemainingHours(u.post) <= 0) return null;
+      if (!u || postRemainingHours(u.post, mesclarHoras(data.postHours)) <= 0) return null;
       return { id, title: `${u.post.desc || "(post)"} · ${u.clientName}`, isPost: true };
     }
     const t = tasks.find((x) => x.id === id);
@@ -1935,7 +2023,7 @@ function AreaView({ area, data, addTask, toggleTask, delTask, setStatus, onOpen,
   );
 }
 
-function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMonth, onAddPost, onUpdatePost, onDeletePost, onCopy, onPasteList }) {
+function SocialMonthBlock({ m, isArchive, clientTasks, postHours, onUpdateMonth, onDeleteMonth, onAddPost, onUpdatePost, onDeletePost, onCopy, onPasteList }) {
   const linked = clientTasks.find((t) => t.id === m.taskId);
   const posts = (m.posts || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   const postado = posts.filter((p) => p.status === "postado").length;
@@ -2003,7 +2091,7 @@ function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMo
                   </select>
                 </td>
                 <td className="py-1 pr-2">
-                  {(() => { const h = postRemainingHours(p); return h > 0 ? <span className="text-violet-700 font-semibold">{h}h</span> : <span className="text-slate-300">0h</span>; })()}
+                  {(() => { const h = postRemainingHours(p, postHours); return h > 0 ? <span className="text-violet-700 font-semibold">{h}h</span> : <span className="text-slate-300">0h</span>; })()}
                 </td>
                 <td className="py-1 pr-2">
                   <div className="flex flex-col gap-0.5">
@@ -2048,7 +2136,7 @@ function SocialMonthBlock({ m, isArchive, clientTasks, onUpdateMonth, onDeleteMo
   );
 }
 
-function PostsView({ client, updateClient, clientTasks }) {
+function PostsView({ client, updateClient, clientTasks, postHours }) {
   const months = client.socialMonths || [];
   const [newMonthName, setNewMonthName] = useState("");
   const [showArchive, setShowArchive] = useState(false);
@@ -2107,7 +2195,7 @@ function PostsView({ client, updateClient, clientTasks }) {
       </div>
       {active.length === 0 && <p className="text-sm text-slate-400 mb-3">Nenhum mês ativo. Crie um acima.</p>}
       {active.map((m) => (
-        <SocialMonthBlock key={m.id} m={m} isArchive={false} clientTasks={clientTasks} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
+        <SocialMonthBlock key={m.id} m={m} isArchive={false} clientTasks={clientTasks} postHours={postHours} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
       ))}
       {archived.length > 0 && (
         <div className="mt-2">
@@ -2115,7 +2203,7 @@ function PostsView({ client, updateClient, clientTasks }) {
             {showArchive ? "Ocultar" : "Ver"} arquivo ({archived.length} {archived.length === 1 ? "mês" : "meses"})
           </button>
           {showArchive && archived.map((m) => (
-            <SocialMonthBlock key={m.id} m={m} isArchive={true} clientTasks={clientTasks} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
+            <SocialMonthBlock key={m.id} m={m} isArchive={true} clientTasks={clientTasks} postHours={postHours} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
           ))}
         </div>
       )}
@@ -2614,7 +2702,7 @@ function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, 
       {sub === "social" && (
         <div>
           <ModeloSocialBox client={acoClient} addTask={addTask} updateClient={(id, patch) => updateAcoClient(patch)} />
-          <PostsView client={acoClient} updateClient={(id, patch) => updateAcoClient(patch)} clientTasks={tasks} />
+          <PostsView client={acoClient} updateClient={(id, patch) => updateAcoClient(patch)} clientTasks={tasks} postHours={mesclarHoras(data.postHours)} />
         </div>
       )}
     </div>
@@ -2745,7 +2833,7 @@ function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, de
                   ) : view === "posts" ? (
                     <div>
                       <ModeloSocialBox client={c} addTask={addTask} updateClient={updateClient} />
-                      <PostsView client={c} updateClient={updateClient} clientTasks={ct} />
+                      <PostsView client={c} updateClient={updateClient} clientTasks={ct} postHours={mesclarHoras(data.postHours)} />
                     </div>
                   ) : (
                     <ClientInfo client={c} updateClient={updateClient} />
