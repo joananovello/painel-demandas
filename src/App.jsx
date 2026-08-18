@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2, Contact, RotateCcw } from "lucide-react";
+import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2, Contact, RotateCcw, Archive, ArrowLeft, ArrowUpCircle, ClipboardList } from "lucide-react";
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 
@@ -61,6 +61,30 @@ const weekOfMonth = (key) => {
 };
 const TODAY_WEEK = weekOfMonth(TODAY);
 const dlExtra = (t) => (t.deadline && !t.done ? <span className="text-xs text-slate-400 whitespace-nowrap">{fmtBR(t.deadline)}</span> : null);
+
+// ---------- Banco de demandas ----------
+// Uma demanda com status "banco" é algo que precisa ser feito mas ainda não entrou na fila:
+// não tem data, não tem tempo, não conta nas horas do dia e não aparece em Hoje nem na semana.
+const noBanco = (t) => t && t.status === "banco";
+
+// Lê uma linha colada de ata ou checklist. Ignora marcadores de lista e caixinhas.
+// Sem data no início vai para o banco; com data no início já entra em pauta com aquele prazo.
+function parseDemandaLine(raw) {
+  let l = (raw || "").trim();
+  if (!l) return null;
+  l = l.replace(/^[-*•·–—>]+\s*/, "").replace(/^\[\s*[xX]?\s*\]\s*/, "").replace(/^\d+\s*[.)]\s*/, "").trim();
+  if (!l) return null;
+  const m = l.match(/^(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\s*[-–—:|]?\s*(.+)$/);
+  if (m) {
+    const dia = Number(m[1]), mes = Number(m[2]);
+    let ano = m[3] ? Number(m[3]) : new Date().getFullYear();
+    if (ano < 100) ano += 2000;
+    if (dia >= 1 && dia <= 31 && mes >= 1 && mes <= 12 && m[4].trim()) {
+      return { titulo: m[4].trim(), date: `${ano}-${pad(mes)}-${pad(dia)}` };
+    }
+  }
+  return { titulo: l, date: null };
+}
 
 const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: null, acoClientes: [], acoTextos: null, postHours: null };
 const migTasks = (ts) => (ts || []).map((t) => ({
@@ -466,7 +490,7 @@ async function fetchGoogleEvents(token, calendarIds) {
 function collectUnits(tasks) {
   const units = [];
   for (const t of tasks) {
-    if (t.done || t.status === "espera" || t.externalOwner) continue;
+    if (t.done || t.status === "espera" || t.status === "banco" || t.externalOwner) continue;
     const allSubs = t.subtasks || [];
     const schSubs = allSubs.filter((s) => !s.done && !s.externalOwner && s.deadline && (s.estTime || 0) > 0);
     if (allSubs.length > 0 && schSubs.length > 0) {
@@ -908,7 +932,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v44</span>
+            <span className="text-[9px] text-slate-300 mt-1">v45</span>
           </div>
         </aside>
 
@@ -941,7 +965,7 @@ function Painel({ session }) {
             {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} updatePostField={updatePostField} onGoClient={() => setTab("cliente")} />}
             {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} googleCalendars={googleCalendars} selectedCals={selectedCals} onToggleCal={toggleCal} onCarregarEventos={carregarEventos} />}
             {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
-            {tab === "cliente" && <Clientes data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
+            {tab === "cliente" && <Clientes data={data} addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
             {tab === "acohub" && <AcoHubView data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} addReserva={addReserva} editReserva={editReserva} delReserva={delReserva} setPricing={setPricing} setTexto={setTexto} resetTexto={resetTexto} gerarProcessoReserva={gerarProcessoReserva} removerProcessoReserva={removerProcessoReserva} updateAcoClient={updateAcoClient} ensureAcoClient={ensureAcoClient} addAcoCliente={addAcoCliente} editAcoCliente={editAcoCliente} delAcoCliente={delAcoCliente} />}
             {["novello", "pessoal", "freela"].includes(tab) && (
               <AreaView area={tab} data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} />
@@ -1057,7 +1081,7 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
   const client = t.clientId ? data.clients.find((c) => c.id === t.clientId) : null;
   const tag = t.area === "cliente" ? (client ? client.name : "Cliente") : AREAS[t.area].label;
   const recurring = t.recurrence && t.recurrence !== "none";
-  const stuck = !t.done && stuckDays && (t.status === "espera" || !t.deadline) && daysSince(t.statusSince) >= stuckDays;
+  const stuck = !t.done && !noBanco(t) && stuckDays && (t.status === "espera" || !t.deadline) && daysSince(t.statusSince) >= stuckDays;
   const overdue = !t.done && t.deadline && t.deadline < TODAY;
   const latePlan = t.workDate && t.deadline && t.workDate > t.deadline;
   const prog = subProgress(t);
@@ -1577,7 +1601,7 @@ function Dashboard({ data, sched, onOpen, onGoClient }) {
 
   const tasks = data.tasks;
   const clientes = data.clients.length;
-  const listPendentes = tasks.filter((t) => !t.done && t.status !== "espera");
+  const listPendentes = tasks.filter((t) => !t.done && t.status !== "espera" && !noBanco(t));
   const listAtrasadas = tasks.filter((t) => !t.done && t.deadline && t.deadline < TODAY);
   const listEspera = tasks.filter((t) => !t.done && t.status === "espera");
   const listProximas = tasks.filter((t) => !t.done && t.deadline && t.deadline >= TODAY && t.deadline <= periodEnd);
@@ -1678,7 +1702,7 @@ function TaskRow({ t, data, extra, overdue, muted, onToggle, onDelete, onStatus,
   const client = t.clientId ? data.clients.find((c) => c.id === t.clientId) : null;
   const tag = t.area === "cliente" ? (client ? client.name : "Cliente") : AREAS[t.area].label;
   const recurring = t.recurrence && t.recurrence !== "none";
-  const stuck = !t.done && stuckDays && (t.status === "espera" || !t.deadline) && daysSince(t.statusSince) >= stuckDays;
+  const stuck = !t.done && !noBanco(t) && stuckDays && (t.status === "espera" || !t.deadline) && daysSince(t.statusSince) >= stuckDays;
   const prog = subProgress(t);
   return (
     <div className={`flex items-center gap-2 py-2 border-b border-slate-100 last:border-0 ${muted ? "opacity-70" : ""}`}>
@@ -1717,8 +1741,9 @@ function TaskRow({ t, data, extra, overdue, muted, onToggle, onDelete, onStatus,
 
 function TaskGroups({ tasks, data, onToggle, onDelete, onStatus, onOpen, stuckDays, groupByScope }) {
   const [showDone, setShowDone] = useState(false);
-  const active = tasks.filter((t) => !t.done && t.status !== "espera");
+  const active = tasks.filter((t) => !t.done && t.status !== "espera" && !noBanco(t));
   const espera = tasks.filter((t) => !t.done && t.status === "espera");
+  const banco = tasks.filter((t) => !t.done && noBanco(t));
   const done = tasks.filter((t) => t.done);
   const sortFn = (a, b) => URG[b.urgency].rank - URG[a.urgency].rank || (a.deadline || "9").localeCompare(b.deadline || "9");
   const row = (t) => <TaskRow key={t.id} t={t} data={data} stuckDays={stuckDays} onToggle={onToggle} onDelete={onDelete} onStatus={onStatus} onOpen={onOpen} overdue={!t.done && t.deadline && t.deadline < TODAY} extra={dlExtra(t)} />;
@@ -1739,6 +1764,13 @@ function TaskGroups({ tasks, data, onToggle, onDelete, onStatus, onOpen, stuckDa
         <div className="bg-slate-50 rounded-lg p-2">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1 flex items-center gap-1"><PauseCircle size={13} /> Em espera ({espera.length})</p>
           {[...espera].sort(sortFn).map(row)}
+        </div>
+      )}
+
+      {banco.length > 0 && (
+        <div className="bg-slate-50 rounded-lg p-2">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1 flex items-center gap-1"><Archive size={13} /> No banco, sem data ({banco.length})</p>
+          {[...banco].sort(sortFn).map(row)}
         </div>
       )}
 
@@ -2783,80 +2815,317 @@ function ClientInfo({ client, updateClient }) {
   );
 }
 
-function Clientes({ data, addTask, toggleTask, delTask, setStatus, addClient, delClient, updateClient, onOpen, stuckDays, onCriarModeloSocial }) {
-  const [adding, setAdding] = useState(false);
-  const [newClient, setNewClient] = useState("");
-  const [openClient, setOpenClient] = useState(null);
-  const [view, setView] = useState("demandas");
-  const [editing, setEditing] = useState(null);
-  const [editName, setEditName] = useState("");
+// Seção de demandas de um cliente, dividida em dois blocos:
+// "Em pauta" (o que já está na fila e conta no seu dia) e "Banco" (o que só está guardado).
+function ClienteDemandas({ client, tasks, data, addTask, editTask, toggleTask, delTask, setStatus, onOpen, stuckDays }) {
+  const [quick, setQuick] = useState("");
+  const [destino, setDestino] = useState("banco");
+  const [showForm, setShowForm] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [msg, setMsg] = useState("");
+  const [showDone, setShowDone] = useState(false);
 
-  const openTab = (id) => { if (openClient === id) { setOpenClient(null); } else { setOpenClient(id); setView("demandas"); } };
-  const startEdit = (c) => { setEditing(c.id); setEditName(c.name); };
-  const saveEdit = (id) => { if (editName.trim()) updateClient(id, { name: editName.trim() }); setEditing(null); };
-  const sortedClients = [...data.clients].filter((c) => c.id !== "__acohub__" && !c.hidden).sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" }));
+  const banco = tasks.filter((t) => !t.done && noBanco(t));
+  const pauta = tasks.filter((t) => !t.done && !noBanco(t));
+  const feitas = tasks.filter((t) => t.done);
+  const ordena = (a, b) => URG[b.urgency].rank - URG[a.urgency].rank || (a.deadline || "9").localeCompare(b.deadline || "9");
+
+  const base = (titulo, date, paraPauta) => ({
+    title: titulo, area: "cliente", clientId: client.id, scope: "pontual",
+    deadline: date || null, estTime: 0, urgency: "media", recurrence: "none",
+    status: paraPauta ? "ativa" : "banco",
+  });
+
+  const addRapido = () => {
+    const titulo = quick.trim();
+    if (!titulo) return;
+    addTask(base(titulo, null, destino === "pauta"));
+    setQuick("");
+  };
+
+  // Cola a ata inteira de uma vez. Linha com data entra em pauta, o resto vai para o banco.
+  const colar = () => {
+    const itens = pasteText.split("\n").map(parseDemandaLine).filter(Boolean);
+    if (!itens.length) { setShowPaste(false); return; }
+    itens.forEach((it) => addTask(base(it.titulo, it.date, !!it.date)));
+    const comData = itens.filter((i) => i.date).length;
+    setMsg(`${itens.length} ${itens.length === 1 ? "item importado" : "itens importados"}: ${comData} em pauta, ${itens.length - comData} no banco.`);
+    setTimeout(() => setMsg(""), 4000);
+    setPasteText(""); setShowPaste(false);
+  };
+
+  const puxar = (id) => setStatus(id, "ativa");
+  const devolver = (id) => { editTask(id, { deadline: null, workDate: null }); setStatus(id, "banco"); };
+
+  const linhaPauta = (t) => (
+    <div key={t.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
+      <button onClick={() => toggleTask(t.id)} className={`shrink-0 w-5 h-5 rounded border flex items-center justify-center ${t.done ? "bg-violet-600 border-violet-600 text-white" : "border-slate-300"}`}>
+        {t.done && <Check size={13} />}
+      </button>
+      <span className={`shrink-0 w-2 h-2 rounded-full ${URG[t.urgency].dot}`} />
+      <div className="flex-1 min-w-0">
+        <p onClick={() => onOpen(t.id)} className={`text-sm truncate cursor-pointer hover:text-violet-700 flex items-center gap-1 ${t.done ? "line-through text-slate-400" : ""}`}>
+          {t.recurrence && t.recurrence !== "none" && <Repeat size={12} className="text-violet-400 shrink-0" />}
+          <span className="truncate">{t.title}</span>
+        </p>
+        <div className="flex items-center gap-1.5 flex-wrap mt-0.5 text-xs">
+          {t.deadline
+            ? <span className={t.deadline < TODAY ? "text-red-600 font-medium" : "text-slate-400"}>{t.deadline < TODAY ? "vencida " : "entrega "}{fmtBR(t.deadline)}</span>
+            : <span className="text-amber-600">sem prazo</span>}
+          {(t.estTime || 0) > 0 ? <span className="text-slate-400">{t.estTime}h</span> : <span className="text-amber-600">sem tempo</span>}
+          {t.status === "espera" && <span className="text-slate-400">em espera</span>}
+          {subProgress(t) && <span className="text-violet-500 flex items-center gap-0.5"><ListChecks size={11} />{subProgress(t)}</span>}
+        </div>
+      </div>
+      <button onClick={() => onOpen(t.id)} title="Abrir e definir prazo e tempo" className="shrink-0 text-slate-300 hover:text-violet-600"><Pencil size={14} /></button>
+      <button onClick={() => devolver(t.id)} title="Devolver para o banco (limpa o prazo)" className="shrink-0 text-slate-300 hover:text-violet-600"><Archive size={15} /></button>
+      <button onClick={() => delTask(t.id)} className="shrink-0 text-slate-300 hover:text-red-500"><Trash2 size={15} /></button>
+    </div>
+  );
+
+  const linhaBanco = (t) => (
+    <div key={t.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
+      <span className={`shrink-0 w-2 h-2 rounded-full ${URG[t.urgency].dot}`} />
+      <p onClick={() => onOpen(t.id)} className="text-sm flex-1 min-w-0 truncate cursor-pointer hover:text-violet-700">{t.title}</p>
+      <button onClick={() => puxar(t.id)} className="shrink-0 text-xs bg-violet-600 text-white rounded-lg px-2 py-1 font-medium flex items-center gap-1 hover:bg-violet-700">
+        <ArrowUpCircle size={12} /> Colocar em pauta
+      </button>
+      <button onClick={() => delTask(t.id)} className="shrink-0 text-slate-300 hover:text-red-500"><Trash2 size={15} /></button>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
-      <Section title="Meus clientes" icon={Users}>
-        <div className="flex gap-2 mb-3">
-          <input value={newClient} onChange={(e) => setNewClient(e.target.value)} placeholder="Nome do cliente"
-            onKeyDown={(e) => { if (e.key === "Enter" && newClient.trim()) { addClient(newClient.trim()); setNewClient(""); } }}
-            className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" />
-          <button onClick={() => { if (newClient.trim()) { addClient(newClient.trim()); setNewClient(""); } }}
-            className="bg-violet-600 text-white rounded-lg px-3 text-sm font-medium"><Plus size={16} /></button>
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex gap-2">
+          <input value={quick} onChange={(e) => setQuick(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addRapido(); }}
+            placeholder="O que precisa ser feito para este cliente?" className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+          <select value={destino} onChange={(e) => setDestino(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-2 text-sm">
+            <option value="banco">Guardar no banco</option>
+            <option value="pauta">Colocar em pauta</option>
+          </select>
+          <button onClick={addRapido} className="bg-violet-600 text-white rounded-lg px-3 text-sm font-medium"><Plus size={16} /></button>
         </div>
-        {sortedClients.length === 0 && <p className="text-sm text-slate-400">Adicione seus clientes para organizar as demandas.</p>}
-        {sortedClients.map((c) => {
-          const ct = data.tasks.filter((t) => t.clientId === c.id);
-          const pend = ct.filter((t) => !t.done).length;
-          const open = openClient === c.id;
-          return (
-            <div key={c.id} className="border-b border-slate-100 last:border-0">
-              <div className="flex items-center gap-2 py-2">
-                {editing === c.id ? (
-                  <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} onBlur={() => saveEdit(c.id)} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(c.id); }} className="flex-1 border border-slate-300 rounded-lg px-2 py-1 text-sm" />
-                ) : (
-                  <button onClick={() => openTab(c.id)} className="flex-1 flex items-center gap-2 text-left">
-                    <span className="text-sm font-medium">{c.name}</span>
-                    {pend > 0 && <span className="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full">{pend}</span>}
-                  </button>
-                )}
-                <button onClick={() => startEdit(c)} className="text-slate-300 hover:text-violet-600"><Pencil size={14} /></button>
-                <button onClick={() => delClient(c.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={15} /></button>
-              </div>
-              {open && (
-                <div className="pb-3 pl-1">
-                  <div className="flex gap-1 mb-2">
-                    <button onClick={() => setView("demandas")} className={`text-xs px-3 py-1 rounded-full border ${view === "demandas" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Demandas</button>
-                    <button onClick={() => setView("posts")} className={`text-xs px-3 py-1 rounded-full border ${view === "posts" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Posts</button>
-                    <button onClick={() => setView("info")} className={`text-xs px-3 py-1 rounded-full border ${view === "info" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-500 border-slate-200"}`}>Informações</button>
-                  </div>
-                  {view === "demandas" ? (
-                    ct.length === 0 ? <p className="text-xs text-slate-400 mb-2">Sem demandas para este cliente.</p> :
-                      <TaskGroups tasks={ct} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={true} />
-                  ) : view === "posts" ? (
-                    <div>
-                      <ModeloSocialBox client={c} addTask={addTask} updateClient={updateClient} />
-                      <PostsView client={c} updateClient={updateClient} clientTasks={ct} postHours={mesclarHoras(data.postHours)} />
-                    </div>
-                  ) : (
-                    <ClientInfo client={c} updateClient={updateClient} />
-                  )}
-                </div>
-              )}
+        <div className="flex items-center gap-3 mt-2 flex-wrap">
+          <button onClick={() => { setShowPaste(!showPaste); setShowForm(false); }} className="text-xs text-violet-600 hover:text-violet-800 flex items-center gap-1"><ClipboardList size={13} /> Colar lista da reunião</button>
+          <button onClick={() => { setShowForm(!showForm); setShowPaste(false); }} className="text-xs text-violet-600 hover:text-violet-800 flex items-center gap-1"><Plus size={13} /> Demanda com prazo, tempo e recorrência</button>
+          {msg && <span className="text-xs text-green-600">{msg}</span>}
+        </div>
+
+        {showPaste && (
+          <div className="mt-3 bg-violet-50 rounded-lg p-2 border border-violet-100">
+            <p className="text-xs text-slate-500 mb-1">Um item por linha. Pode colar direto da ata, com traço, bolinha ou numeração, que eu limpo. Linha sem data vai para o banco. Linha começando com data (20/08 ou 20/08/2026) já entra em pauta com aquele prazo.</p>
+            <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder={"- revisar textos do site\n- 20/08 enviar orçamento novo\n* pedir fotos do estoque\n1. 25/08 reunião de alinhamento"} className="w-full h-32 border border-slate-300 rounded-lg p-2 text-xs" />
+            <div className="flex gap-2 mt-1">
+              <button onClick={colar} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-xs font-medium">Importar</button>
+              <button onClick={() => { setShowPaste(false); setPasteText(""); }} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs">Cancelar</button>
             </div>
+          </div>
+        )}
+
+        {showForm && (
+          <div className="mt-3">
+            <TaskForm area="cliente" clients={[client]} onAdd={addTask} onClose={() => setShowForm(false)} />
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5 mb-2">
+          <CircleDot size={15} className="text-violet-500" /> Em pauta
+          <span className="text-xs font-normal text-slate-400">({pauta.length}) · entram no cálculo do seu dia</span>
+        </h3>
+        {pauta.length === 0
+          ? <p className="text-sm text-slate-400">Nada em pauta para este cliente agora.</p>
+          : [...pauta].sort(ordena).map(linhaPauta)}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5 mb-2">
+          <Archive size={15} className="text-slate-400" /> Banco
+          <span className="text-xs font-normal text-slate-400">({banco.length}) · sem data, fora do cálculo</span>
+        </h3>
+        {banco.length === 0
+          ? <p className="text-sm text-slate-400">Banco vazio. Tudo que você guardar aqui fica esperando sem atrapalhar o seu dia.</p>
+          : [...banco].sort(ordena).map(linhaBanco)}
+      </div>
+
+      {feitas.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <button onClick={() => setShowDone(!showDone)} className="text-xs text-slate-400 hover:text-slate-600">{showDone ? "Ocultar" : "Ver"} concluídas ({feitas.length})</button>
+          {showDone && [...feitas].reverse().map((t) => (
+            <TaskRow key={t.id} t={t} data={data} onToggle={toggleTask} onDelete={delTask} onOpen={onOpen} stuckDays={stuckDays} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Página inteira de um cliente, com as seções Demandas, Posts e Informações.
+function ClientePage({ client, data, addTask, editTask, toggleTask, delTask, setStatus, updateClient, onOpen, stuckDays, onVoltar }) {
+  const [view, setView] = useState("demandas");
+  const [editName, setEditName] = useState(null);
+  const ct = data.tasks.filter((t) => t.clientId === client.id);
+  const pauta = ct.filter((t) => !t.done && !noBanco(t)).length;
+  const banco = ct.filter((t) => !t.done && noBanco(t)).length;
+  const postHours = mesclarHoras(data.postHours);
+  const posts = (client.socialMonths || []).filter((m) => !m.done).flatMap((m) => m.posts || []);
+  const aprovando = posts.filter((p) => p.status === "aprovacao").length;
+  const emProducao = posts.filter((p) => postRemainingHours(p, postHours) > 0).length;
+
+  const VIEWS = [
+    { id: "demandas", label: "Demandas", icon: ListChecks },
+    { id: "posts", label: "Posts", icon: Calendar },
+    { id: "info", label: "Informações", icon: Link2 },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <button onClick={onVoltar} className="flex items-center gap-1 text-sm text-slate-500 hover:text-violet-700 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
+          <ArrowLeft size={15} /> Clientes
+        </button>
+        {editName !== null ? (
+          <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)}
+            onBlur={() => { if (editName.trim()) updateClient(client.id, { name: editName.trim() }); setEditName(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { if (editName.trim()) updateClient(client.id, { name: editName.trim() }); setEditName(null); } }}
+            className="text-xl font-bold text-violet-900 border-b border-violet-300 outline-none bg-transparent" />
+        ) : (
+          <h2 className="text-xl font-bold text-violet-900 flex items-center gap-2">
+            {client.name}
+            <button onClick={() => setEditName(client.name)} className="text-slate-300 hover:text-violet-600"><Pencil size={14} /></button>
+          </h2>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-white rounded-2xl border border-slate-200 p-3">
+          <p className="text-2xl font-bold text-violet-800">{pauta}</p>
+          <p className="text-xs text-slate-500">em pauta</p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-3">
+          <p className="text-2xl font-bold text-slate-600">{banco}</p>
+          <p className="text-xs text-slate-500">no banco</p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-3">
+          <p className="text-2xl font-bold text-pink-600">{emProducao}</p>
+          <p className="text-xs text-slate-500">posts em produção</p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-3">
+          <p className="text-2xl font-bold text-amber-600">{aprovando}</p>
+          <p className="text-xs text-slate-500">posts para aprovar</p>
+        </div>
+      </div>
+
+      <div className="flex gap-1 overflow-x-auto">
+        {VIEWS.map((v) => {
+          const Icon = v.icon;
+          return (
+            <button key={v.id} onClick={() => setView(v.id)} className={`text-sm px-3 py-1.5 rounded-lg border whitespace-nowrap flex items-center gap-1.5 ${view === v.id ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-600 border-slate-200 hover:bg-violet-50"}`}>
+              <Icon size={14} /> {v.label}
+            </button>
           );
         })}
-      </Section>
+      </div>
 
-      <Section title="Nova demanda de cliente" icon={Plus} action={
-        <button onClick={() => setAdding(!adding)} className="text-violet-600 text-sm">{adding ? "Fechar" : "Abrir"}</button>
-      }>
-        {data.clients.length === 0 ? <p className="text-sm text-slate-400">Cadastre um cliente primeiro.</p> :
-          adding ? <TaskForm area="cliente" clients={sortedClients} onAdd={addTask} onClose={() => setAdding(false)} /> :
-          <p className="text-sm text-slate-400">Clique em Abrir para adicionar uma demanda.</p>}
-      </Section>
+      {view === "demandas" && (
+        <ClienteDemandas client={client} tasks={ct} data={data} addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} />
+      )}
+
+      {view === "posts" && (
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <ModeloSocialBox client={client} addTask={addTask} updateClient={updateClient} />
+          <PostsView client={client} updateClient={updateClient} clientTasks={ct} postHours={postHours} />
+        </div>
+      )}
+
+      {view === "info" && (
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <ClientInfo client={client} updateClient={updateClient} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Clientes({ data, addTask, editTask, toggleTask, delTask, setStatus, addClient, delClient, updateClient, onOpen, stuckDays, onCriarModeloSocial }) {
+  const [newClient, setNewClient] = useState("");
+  const [aberto, setAberto] = useState(null);
+  const [busca, setBusca] = useState("");
+  const postHours = mesclarHoras(data.postHours);
+
+  const lista = [...data.clients]
+    .filter((c) => c.id !== "__acohub__" && !c.hidden)
+    .filter((c) => c.name.toLowerCase().includes(busca.trim().toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" }));
+
+  const criar = () => {
+    const nome = newClient.trim();
+    if (!nome) return;
+    addClient(nome);
+    setNewClient("");
+  };
+
+  const clienteAberto = aberto ? data.clients.find((c) => c.id === aberto) : null;
+  if (clienteAberto) {
+    return (
+      <ClientePage
+        client={clienteAberto} data={data}
+        addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus}
+        updateClient={updateClient} onOpen={onOpen} stuckDays={stuckDays}
+        onVoltar={() => setAberto(null)}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex gap-2 mb-2">
+          <input value={newClient} onChange={(e) => setNewClient(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") criar(); }}
+            placeholder="Nome do novo cliente" className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+          <button onClick={criar} className="bg-violet-600 text-white rounded-lg px-3 text-sm font-medium flex items-center gap-1"><Plus size={16} /> Criar</button>
+        </div>
+        {data.clients.filter((c) => c.id !== "__acohub__" && !c.hidden).length > 3 && (
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar cliente" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+        )}
+      </div>
+
+      {lista.length === 0 ? (
+        <p className="text-sm text-slate-400">Nenhum cliente por aqui ainda. Crie o primeiro acima.</p>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {lista.map((c) => {
+            const ct = data.tasks.filter((t) => t.clientId === c.id);
+            const pauta = ct.filter((t) => !t.done && !noBanco(t));
+            const banco = ct.filter((t) => !t.done && noBanco(t)).length;
+            const atrasadas = pauta.filter((t) => t.deadline && t.deadline < TODAY).length;
+            const posts = (c.socialMonths || []).filter((m) => !m.done).flatMap((m) => m.posts || []);
+            const aprovando = posts.filter((p) => p.status === "aprovacao").length;
+            const emProducao = posts.filter((p) => postRemainingHours(p, postHours) > 0).length;
+            return (
+              <div key={c.id} className="bg-white rounded-2xl border border-slate-200 p-4 hover:border-violet-300 transition-colors">
+                <div className="flex items-start gap-2">
+                  <button onClick={() => setAberto(c.id)} className="flex-1 text-left">
+                    <p className="text-base font-semibold text-slate-800 hover:text-violet-700">{c.name}</p>
+                  </button>
+                  <button onClick={() => delClient(c.id)} className="text-slate-200 hover:text-red-500 shrink-0"><Trash2 size={15} /></button>
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-medium">{pauta.length} em pauta</span>
+                  {banco > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{banco} no banco</span>}
+                  {emProducao > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-pink-100 text-pink-700">{emProducao} posts</span>}
+                  {aprovando > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">{aprovando} p/ aprovar</span>}
+                  {atrasadas > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{atrasadas} atrasada{atrasadas > 1 ? "s" : ""}</span>}
+                </div>
+                <button onClick={() => setAberto(c.id)} className="mt-3 text-xs text-violet-600 hover:text-violet-800 font-medium">Abrir cliente →</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
