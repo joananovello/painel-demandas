@@ -571,15 +571,60 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
 
+  const [recuperando, setRecuperando] = useState(false);
+
   useEffect(() => {
+    // Se veio pelo link de redefinição, o endereço traz type=recovery
+    try {
+      const h = (window.location.hash || "") + (window.location.search || "");
+      if (h.includes("type=recovery")) setRecuperando(true);
+    } catch (_) {}
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((e, s) => {
+      if (e === "PASSWORD_RECOVERY") setRecuperando(true);
+      setSession(s);
+    });
     return () => subscription.unsubscribe();
   }, []);
 
   if (!authReady) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando...</div>;
+  if (recuperando) return <NovaSenha onPronto={() => { setRecuperando(false); try { window.location.hash = ""; } catch (_) {} }} />;
   if (!session) return <Login />;
   return <Painel session={session} />;
+}
+
+function NovaSenha({ onPronto }) {
+  const [senha, setSenha] = useState("");
+  const [conf, setConf] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const salvar = async () => {
+    if (senha.length < 6) { setMsg("A senha precisa ter pelo menos 6 caracteres."); return; }
+    if (senha !== conf) { setMsg("As duas senhas não são iguais."); return; }
+    setBusy(true); setMsg("");
+    try {
+      const { error } = await supabase.auth.updateUser({ password: senha });
+      if (error) setMsg(`Não deu certo: ${error.message}`);
+      else { setMsg("Senha alterada! Entrando..."); setTimeout(onPronto, 1200); }
+    } catch (e) { setMsg("Não consegui falar com o banco."); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-violet-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-6 w-full max-w-sm">
+        <h1 className="text-xl font-bold text-violet-900 mb-1">Definir nova senha</h1>
+        <p className="text-xs text-violet-500 mb-4">Escolha a senha que você vai usar daqui pra frente.</p>
+        <label className="block text-sm font-medium mb-1">Nova senha</label>
+        <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-3" />
+        <label className="block text-sm font-medium mb-1">Repita a nova senha</label>
+        <input type="password" value={conf} onChange={(e) => setConf(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") salvar(); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-3" />
+        {msg && <p className={`text-sm mb-3 ${msg.startsWith("Senha alterada") ? "text-green-600" : "text-red-600"}`}>{msg}</p>}
+        <button onClick={salvar} disabled={busy} className="w-full bg-violet-600 text-white rounded-lg py-2 font-medium hover:bg-violet-700 disabled:opacity-60">{busy ? "Salvando..." : "Salvar senha"}</button>
+      </div>
+    </div>
+  );
 }
 
 function Login() {
@@ -587,10 +632,35 @@ function Login() {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const semConfig = !import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+  // Mostra o motivo real da falha. Antes, qualquer erro virava "senha incorreta",
+  // o que escondia problemas de configuração ou de banco fora do ar.
   const submit = async () => {
+    if (semConfig) { setErr("Falta configurar VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY na Vercel."); return; }
     setBusy(true); setErr("");
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    if (error) setErr("E-mail ou senha incorretos.");
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) {
+        const m = (error.message || "").toLowerCase();
+        if (m.includes("invalid login")) setErr("E-mail ou senha incorretos.");
+        else if (m.includes("email not confirmed")) setErr("Este e-mail ainda não foi confirmado no Supabase.");
+        else if (m.includes("failed to fetch") || m.includes("network")) setErr("Não consegui falar com o banco. Verifique se o projeto do Supabase não está pausado.");
+        else setErr(`Erro do servidor: ${error.message}`);
+      }
+    } catch (e) {
+      setErr("Não consegui falar com o banco. Verifique se o projeto do Supabase não está pausado.");
+    }
+    setBusy(false);
+  };
+
+  const recuperar = async () => {
+    if (!email.trim()) { setErr("Escreva seu e-mail acima primeiro."); return; }
+    setBusy(true); setErr("");
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+      setErr(error ? `Não deu certo: ${error.message}` : "Enviei um link de redefinição para o seu e-mail.");
+    } catch (e) { setErr("Não consegui enviar o e-mail de redefinição."); }
     setBusy(false);
   };
   return (
@@ -602,8 +672,9 @@ function Login() {
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-3" />
         <label className="block text-sm font-medium mb-1">Senha</label>
         <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-3" />
-        {err && <p className="text-sm text-red-600 mb-3">{err}</p>}
+        {err && <p className={`text-sm mb-3 ${err.startsWith("Enviei") ? "text-green-600" : "text-red-600"}`}>{err}</p>}
         <button onClick={submit} disabled={busy} className="w-full bg-violet-600 text-white rounded-lg py-2 font-medium hover:bg-violet-700 disabled:opacity-60">{busy ? "Entrando..." : "Entrar"}</button>
+        <button onClick={recuperar} disabled={busy} className="w-full text-xs text-slate-400 hover:text-violet-600 mt-2">Esqueci minha senha</button>
       </div>
     </div>
   );
@@ -932,7 +1003,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v45</span>
+            <span className="text-[9px] text-slate-300 mt-1">v47</span>
           </div>
         </aside>
 
