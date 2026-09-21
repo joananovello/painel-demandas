@@ -1,8 +1,25 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { initializeApp } from "firebase/app";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail } from "firebase/auth";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2, Contact, RotateCcw, Archive, ArrowLeft, ArrowUpCircle, ClipboardList } from "lucide-react";
 
-const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
+// ---------- Firebase ----------
+// Ao contrário do Supabase gratuito, o Firestore não pausa por inatividade.
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FB_API_KEY,
+  authDomain: import.meta.env.VITE_FB_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FB_PROJECT_ID,
+  appId: import.meta.env.VITE_FB_APP_ID,
+};
+const temConfigFB = !!(firebaseConfig.apiKey && firebaseConfig.projectId);
+const fbApp = temConfigFB ? initializeApp(firebaseConfig) : null;
+const auth = fbApp ? getAuth(fbApp) : null;
+const db = fbApp ? getFirestore(fbApp) : null;
+
+// Os dados vão como texto JSON num único campo. Assim o Firestore não implica
+// com listas dentro de listas nem com campos indefinidos.
+const docPainel = (uid) => doc(db, "painel", uid);
 
 const KEY = "novello-dashboard-v1";
 
@@ -571,60 +588,15 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
 
-  const [recuperando, setRecuperando] = useState(false);
-
   useEffect(() => {
-    // Se veio pelo link de redefinição, o endereço traz type=recovery
-    try {
-      const h = (window.location.hash || "") + (window.location.search || "");
-      if (h.includes("type=recovery")) setRecuperando(true);
-    } catch (_) {}
-    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((e, s) => {
-      if (e === "PASSWORD_RECOVERY") setRecuperando(true);
-      setSession(s);
-    });
-    return () => subscription.unsubscribe();
+    if (!auth) { setAuthReady(true); return; }
+    const unsub = onAuthStateChanged(auth, (u) => { setSession(u); setAuthReady(true); });
+    return () => unsub();
   }, []);
 
   if (!authReady) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando...</div>;
-  if (recuperando) return <NovaSenha onPronto={() => { setRecuperando(false); try { window.location.hash = ""; } catch (_) {} }} />;
   if (!session) return <Login />;
   return <Painel session={session} />;
-}
-
-function NovaSenha({ onPronto }) {
-  const [senha, setSenha] = useState("");
-  const [conf, setConf] = useState("");
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const salvar = async () => {
-    if (senha.length < 6) { setMsg("A senha precisa ter pelo menos 6 caracteres."); return; }
-    if (senha !== conf) { setMsg("As duas senhas não são iguais."); return; }
-    setBusy(true); setMsg("");
-    try {
-      const { error } = await supabase.auth.updateUser({ password: senha });
-      if (error) setMsg(`Não deu certo: ${error.message}`);
-      else { setMsg("Senha alterada! Entrando..."); setTimeout(onPronto, 1200); }
-    } catch (e) { setMsg("Não consegui falar com o banco."); }
-    setBusy(false);
-  };
-
-  return (
-    <div className="min-h-screen bg-violet-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl border border-slate-200 p-6 w-full max-w-sm">
-        <h1 className="text-xl font-bold text-violet-900 mb-1">Definir nova senha</h1>
-        <p className="text-xs text-violet-500 mb-4">Escolha a senha que você vai usar daqui pra frente.</p>
-        <label className="block text-sm font-medium mb-1">Nova senha</label>
-        <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-3" />
-        <label className="block text-sm font-medium mb-1">Repita a nova senha</label>
-        <input type="password" value={conf} onChange={(e) => setConf(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") salvar(); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 mb-3" />
-        {msg && <p className={`text-sm mb-3 ${msg.startsWith("Senha alterada") ? "text-green-600" : "text-red-600"}`}>{msg}</p>}
-        <button onClick={salvar} disabled={busy} className="w-full bg-violet-600 text-white rounded-lg py-2 font-medium hover:bg-violet-700 disabled:opacity-60">{busy ? "Salvando..." : "Salvar senha"}</button>
-      </div>
-    </div>
-  );
 }
 
 function Login() {
@@ -632,24 +604,22 @@ function Login() {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const semConfig = !import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const semConfig = !temConfigFB;
 
   // Mostra o motivo real da falha. Antes, qualquer erro virava "senha incorreta",
   // o que escondia problemas de configuração ou de banco fora do ar.
   const submit = async () => {
-    if (semConfig) { setErr("Falta configurar VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY na Vercel."); return; }
+    if (semConfig) { setErr("Falta configurar as variáveis do Firebase na Vercel (VITE_FB_API_KEY, VITE_FB_AUTH_DOMAIN, VITE_FB_PROJECT_ID, VITE_FB_APP_ID)."); return; }
     setBusy(true); setErr("");
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-      if (error) {
-        const m = (error.message || "").toLowerCase();
-        if (m.includes("invalid login")) setErr("E-mail ou senha incorretos.");
-        else if (m.includes("email not confirmed")) setErr("Este e-mail ainda não foi confirmado no Supabase.");
-        else if (m.includes("failed to fetch") || m.includes("network")) setErr("Não consegui falar com o banco. Verifique se o projeto do Supabase não está pausado.");
-        else setErr(`Erro do servidor: ${error.message}`);
-      }
+      await signInWithEmailAndPassword(auth, email.trim(), password);
     } catch (e) {
-      setErr("Não consegui falar com o banco. Verifique se o projeto do Supabase não está pausado.");
+      const c = e && e.code ? e.code : "";
+      if (c.includes("invalid-credential") || c.includes("wrong-password") || c.includes("user-not-found")) setErr("E-mail ou senha incorretos.");
+      else if (c.includes("invalid-email")) setErr("Esse e-mail não parece válido.");
+      else if (c.includes("too-many-requests")) setErr("Muitas tentativas seguidas. Espere alguns minutos e tente de novo.");
+      else if (c.includes("network")) setErr("Sem conexão com o servidor. Confira sua internet.");
+      else setErr(`Erro: ${e.message || c}`);
     }
     setBusy(false);
   };
@@ -658,9 +628,9 @@ function Login() {
     if (!email.trim()) { setErr("Escreva seu e-mail acima primeiro."); return; }
     setBusy(true); setErr("");
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
-      setErr(error ? `Não deu certo: ${error.message}` : "Enviei um link de redefinição para o seu e-mail.");
-    } catch (e) { setErr("Não consegui enviar o e-mail de redefinição."); }
+      await sendPasswordResetEmail(auth, email.trim());
+      setErr("Enviei um link de redefinição para o seu e-mail.");
+    } catch (e) { setErr(`Não consegui enviar o e-mail: ${(e && e.code) || ""}`); }
     setBusy(false);
   };
   return (
@@ -759,9 +729,11 @@ function Painel({ session }) {
   useEffect(() => {
     (async () => {
       try {
-        const { data: row } = await supabase.from("painel").select("data").eq("user_id", session.user.id).maybeSingle();
-        if (row && row.data) {
-          const p = row.data;
+        const snap = await getDoc(docPainel(session.uid));
+        const bruto = snap.exists() ? snap.data() : null;
+        const guardado = bruto ? (bruto.json ? JSON.parse(bruto.json) : (bruto.data || null)) : null;
+        if (guardado) {
+          const p = guardado;
           p.tasks = migTasks(p.tasks);
           p.clients = migClients(p.clients);
           p.settings = { workHours: 8, stuckDays: 7, ...(p.settings || {}) };
@@ -783,11 +755,11 @@ function Painel({ session }) {
     if (!loaded.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      supabase.from("painel").upsert({ user_id: session.user.id, data, updated_at: new Date().toISOString() }).then(() => {});
+      setDoc(docPainel(session.uid), { json: JSON.stringify(data), updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
     }, 800);
   }, [data]);
 
-  const logout = () => supabase.auth.signOut();
+  const logout = () => signOut(auth);
 
   // ---- Histórico (desfazer / refazer) ----
   const historyRef = useRef([]);
@@ -1003,7 +975,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v47</span>
+            <span className="text-[9px] text-slate-300 mt-1">v48</span>
           </div>
         </aside>
 
