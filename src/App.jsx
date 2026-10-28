@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail } from "firebase/auth";
-import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { getFirestore, doc, collection, getDoc, getDocs, setDoc, deleteDoc, query, orderBy, limit } from "firebase/firestore";
 import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2, Contact, RotateCcw, Archive, ArrowLeft, ArrowUpCircle, ClipboardList } from "lucide-react";
 
 // ---------- Firebase ----------
@@ -17,9 +17,44 @@ const fbApp = temConfigFB ? initializeApp(firebaseConfig) : null;
 const auth = fbApp ? getAuth(fbApp) : null;
 const db = fbApp ? getFirestore(fbApp) : null;
 
+// ---------- Proteção contra perda de dados ----------
+// Conta os itens de verdade do painel. Serve para perceber quando algo sumiu em massa.
+function contarItens(d) {
+  if (!d) return 0;
+  const posts = (d.clients || []).reduce((n, c) => n + (c.socialMonths || []).reduce((m, sm) => m + (sm.posts || []).length, 0), 0);
+  const subs = (d.tasks || []).reduce((n, t) => n + (t.subtasks || []).length, 0);
+  return (d.clients || []).length + (d.tasks || []).length + (d.meetings || []).length
+    + (d.acoReservas || []).length + (d.acoClientes || []).length + posts + subs;
+}
+
+// Cópias locais automáticas, guardadas no navegador. Sobrevivem a recarregar a página
+// e não dependem de internet nem do Firebase.
+const LS_SNAPS = "painel-copias-v1";
+const MAX_SNAPS = 12;
+
+function lerCopias() {
+  try { const r = localStorage.getItem(LS_SNAPS); return r ? JSON.parse(r) : []; } catch (_) { return []; }
+}
+
+function guardarCopia(data, forcar) {
+  try {
+    const copias = lerCopias();
+    const agora = Date.now();
+    // No máximo uma por hora, salvo quando for forçada (antes de restaurar um backup, por exemplo)
+    if (!forcar && copias.length && (agora - new Date(copias[0].quando).getTime()) < 3600000) return;
+    const nova = { quando: new Date().toISOString(), itens: contarItens(data), json: JSON.stringify(data) };
+    const lista = [nova, ...copias].slice(0, MAX_SNAPS);
+    localStorage.setItem(LS_SNAPS, JSON.stringify(lista));
+  } catch (_) {}
+}
+
 // Os dados vão como texto JSON num único campo. Assim o Firestore não implica
 // com listas dentro de listas nem com campos indefinidos.
 const docPainel = (uid) => doc(db, "painel", uid);
+// Versões na nuvem, numa subcoleção. Se as regras do Firestore ainda não liberarem
+// subcoleções, a gravação falha sem quebrar nada e o painel segue funcionando.
+const docVersao = (uid, id) => doc(db, "painel", uid, "versoes", id);
+const colVersoes = (uid) => collection(db, "painel", uid, "versoes");
 
 const KEY = "novello-dashboard-v1";
 
@@ -669,6 +704,12 @@ function Login() {
 function Painel({ session }) {
   const [data, setData] = useState(emptyData);
   const [loading, setLoading] = useState(true);
+  const [erroCarga, setErroCarga] = useState("");
+  const [saveStatus, setSaveStatus] = useState("ok"); // ok | salvando | erro
+  const [alertaPerda, setAlertaPerda] = useState(null);
+  const [avisoUndo, setAvisoUndo] = useState("");
+  const baseItens = useRef(0);
+  const ultimoBom = useRef(null);
   const [tab, setTab] = useState("hoje");
   const [showSettings, setShowSettings] = useState(false);
   const [detailId, setDetailId] = useState(null);
@@ -742,38 +783,98 @@ function Painel({ session }) {
     });
   };
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const snap = await getDoc(docPainel(session.uid));
-        const bruto = snap.exists() ? snap.data() : null;
-        const guardado = bruto ? (bruto.json ? JSON.parse(bruto.json) : (bruto.data || null)) : null;
-        if (guardado) {
-          const p = guardado;
-          p.tasks = migTasks(p.tasks);
-          p.clients = migClients(p.clients);
-          p.settings = { workHours: 8, stuckDays: 7, ...(p.settings || {}) };
-          p.priorities = Array.isArray(p.priorities) ? p.priorities : [];
-          p.acoReservas = Array.isArray(p.acoReservas) ? p.acoReservas : [];
-          p.acoClientes = Array.isArray(p.acoClientes) ? p.acoClientes : [];
-          p.acoPricing = p.acoPricing || ACO_DEFAULT_PRICING;
-          p.acoTextos = { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) };
-          p.postHours = mesclarHoras(p.postHours);
-          setData({ ...emptyData, ...p });
-        }
-      } catch (e) {}
-      loaded.current = true;
+  // Carrega os dados. Se a leitura falhar, o painel NÃO libera o salvamento automático,
+  // para nunca gravar um painel vazio por cima dos seus dados.
+  const carregar = async () => {
+    setLoading(true); setErroCarga("");
+    try {
+      const snap = await getDoc(docPainel(session.uid));
+      const bruto = snap.exists() ? snap.data() : null;
+      const guardado = bruto ? (bruto.json ? JSON.parse(bruto.json) : (bruto.data || null)) : null;
+      if (guardado) {
+        const p = guardado;
+        p.tasks = migTasks(p.tasks);
+        p.clients = migClients(p.clients);
+        p.settings = { workHours: 8, stuckDays: 7, ...(p.settings || {}) };
+        p.priorities = Array.isArray(p.priorities) ? p.priorities : [];
+        p.acoReservas = Array.isArray(p.acoReservas) ? p.acoReservas : [];
+        p.acoClientes = Array.isArray(p.acoClientes) ? p.acoClientes : [];
+        p.acoPricing = p.acoPricing || ACO_DEFAULT_PRICING;
+        p.acoTextos = { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) };
+        p.postHours = mesclarHoras(p.postHours);
+        const completo = { ...emptyData, ...p };
+        setData(completo);
+        baseItens.current = contarItens(completo);
+        guardarCopia(completo, true);
+      } else {
+        baseItens.current = 0; // painel novo, de verdade vazio
+      }
+      loaded.current = true; // só libera o salvamento depois de uma leitura que deu certo
       setLoading(false);
-    })();
-  }, []);
+    } catch (e) {
+      loaded.current = false;
+      setErroCarga((e && e.message) || "Não consegui ler seus dados.");
+      setLoading(false);
+    }
+  };
 
+  useEffect(() => { carregar(); }, []);
+
+  // Grava de fato, e ainda guarda uma versão na nuvem de vez em quando.
+  const gravar = async (payload) => {
+    setSaveStatus("salvando");
+    const texto = JSON.stringify(payload);
+    try {
+      await setDoc(docPainel(session.uid), { json: texto, updatedAt: new Date().toISOString() }, { merge: true });
+      baseItens.current = contarItens(payload);
+      ultimoBom.current = texto;
+      setSaveStatus("ok");
+      guardarCopia(payload);
+      // Versão na nuvem, no máximo uma por hora. Falha aqui não atrapalha o salvamento.
+      try {
+        const ultima = Number(localStorage.getItem("painel-ultima-versao") || 0);
+        if (Date.now() - ultima > 3600000) {
+          localStorage.setItem("painel-ultima-versao", String(Date.now()));
+          const id = new Date().toISOString().replace(/[:.]/g, "-");
+          await setDoc(docVersao(session.uid, id), { json: texto, quando: new Date().toISOString(), itens: contarItens(payload) });
+          const antigas = await getDocs(query(colVersoes(session.uid), orderBy("quando", "desc")));
+          const sobrando = antigas.docs.slice(20); // mantém as 20 mais recentes
+          for (const d of sobrando) { try { await deleteDoc(d.ref); } catch (_) {} }
+        }
+      } catch (_) {}
+    } catch (e) {
+      setSaveStatus("erro");
+    }
+  };
+
+  // Salvamento automático, com freio: se muita coisa sumir de uma vez, para e pergunta.
   useEffect(() => {
     if (!loaded.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      setDoc(docPainel(session.uid), { json: JSON.stringify(data), updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+      const antes = baseItens.current;
+      const agora = contarItens(data);
+      // Sumiu mais de 30% do painel de uma vez? Isso quase nunca é intencional.
+      if (antes >= 8 && agora < antes * 0.7) {
+        setAlertaPerda({ antes, agora, payload: data });
+        return; // não grava nada até você decidir
+      }
+      gravar(data);
     }, 800);
   }, [data]);
+
+  const confirmarPerda = () => { const a = alertaPerda; setAlertaPerda(null); if (a) gravar(a.payload); };
+  const desfazerPerda = () => {
+    const bruto = ultimoBom.current;
+    setAlertaPerda(null);
+    if (!bruto) { carregar(); return; } // sem cópia na memória, recarrega do banco
+    try {
+      const p = JSON.parse(bruto);
+      skipHistory.current = true;
+      setData(p);
+      baseItens.current = contarItens(p);
+    } catch (_) { carregar(); }
+  };
 
   const logout = () => signOut(auth);
 
@@ -805,6 +906,8 @@ function Painel({ session }) {
   const undo = () => {
     const h = historyRef.current;
     if (!h.length) return;
+    setAvisoUndo("Desfeito. Ctrl+Shift+Z refaz.");
+    setTimeout(() => setAvisoUndo(""), 2500);
     const anterior = h[h.length - 1];
     historyRef.current = h.slice(0, -1);
     futureRef.current = [data, ...futureRef.current].slice(0, 40);
@@ -816,6 +919,8 @@ function Painel({ session }) {
   const redo = () => {
     const f = futureRef.current;
     if (!f.length) return;
+    setAvisoUndo("Refeito.");
+    setTimeout(() => setAvisoUndo(""), 2000);
     const proximo = f[0];
     futureRef.current = f.slice(1);
     historyRef.current = [...historyRef.current, data];
@@ -913,7 +1018,7 @@ function Painel({ session }) {
       }),
     }));
   };
-  const restoreData = (p) => setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) }, acoPricing: p.acoPricing || ACO_DEFAULT_PRICING, acoReservas: Array.isArray(p.acoReservas) ? p.acoReservas : [], acoClientes: Array.isArray(p.acoClientes) ? p.acoClientes : [], acoTextos: { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) }, postHours: mesclarHoras(p.postHours) });
+  const restoreData = (p) => { guardarCopia(data, true); return setData({ ...emptyData, ...p, tasks: migTasks(p.tasks), clients: migClients(p.clients), settings: { workHours: 8, stuckDays: 7, ...(p.settings || {}) }, acoPricing: p.acoPricing || ACO_DEFAULT_PRICING, acoReservas: Array.isArray(p.acoReservas) ? p.acoReservas : [], acoClientes: Array.isArray(p.acoClientes) ? p.acoClientes : [], acoTextos: { ...ACO_TEXTOS_PADRAO, ...(p.acoTextos || {}) }, postHours: mesclarHoras(p.postHours) }); };
 
   // ---- AcoHub: reservas e tabela de preços ----
   const addReserva = (r) => setData((d) => ({ ...d, acoReservas: [...(d.acoReservas || []), { id: uid(), status: "orcamento", nota: false, createdAt: nowISO(), ...r }] }));
@@ -965,6 +1070,24 @@ function Painel({ session }) {
   const removerProcessoReserva = (reservaId) => setData((d) => ({ ...d, tasks: d.tasks.filter((t) => t.reservaId !== reservaId) }));
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando seus dados...</div>;
+
+  // Se a leitura falhou, o painel não abre vazio. Abrir vazio seria o caminho para
+  // o salvamento automático gravar esse vazio por cima de tudo.
+  if (erroCarga) return (
+    <div className="min-h-screen bg-violet-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl border border-red-200 p-6 w-full max-w-md">
+        <h1 className="text-lg font-bold text-red-700 mb-2 flex items-center gap-2"><AlertTriangle size={18} /> Não consegui carregar seus dados</h1>
+        <p className="text-sm text-slate-600 mb-3">
+          Seus dados estão salvos e intactos. O painel parou aqui de propósito, para não gravar nada por cima deles.
+        </p>
+        <p className="text-xs text-slate-400 mb-4 font-mono break-words">{erroCarga}</p>
+        <div className="flex gap-2">
+          <button onClick={carregar} className="flex-1 bg-violet-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-violet-700">Tentar de novo</button>
+          <button onClick={logout} className="px-4 bg-white border border-slate-300 rounded-lg py-2 text-sm">Sair</button>
+        </div>
+      </div>
+    </div>
+  );
   const sd = data.settings.stuckDays;
   const detailTask = detailId ? data.tasks.find((t) => t.id === detailId) : null;
   const hora = new Date().getHours();
@@ -991,7 +1114,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v49</span>
+            <span className="text-[9px] text-slate-300 mt-1">v50</span>
           </div>
         </aside>
 
@@ -1011,6 +1134,17 @@ function Painel({ session }) {
                     <Redo2 size={17} />
                   </button>
                 </div>
+                <div className={`no-print flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium ${
+                  saveStatus === "erro" ? "bg-red-50 border-red-300 text-red-700"
+                  : saveStatus === "salvando" ? "bg-amber-50 border-amber-200 text-amber-700"
+                  : "bg-green-50 border-green-200 text-green-700"}`}>
+                  {saveStatus === "erro" ? <><AlertTriangle size={14} /> Não salvou</>
+                    : saveStatus === "salvando" ? <><Clock size={14} /> Salvando</>
+                    : <><Check size={14} /> Salvo</>}
+                  {saveStatus === "erro" && (
+                    <button onClick={() => gravar(data)} className="underline ml-1">tentar de novo</button>
+                  )}
+                </div>
                 <div className="bg-white rounded-xl border border-slate-200 px-4 py-2 flex items-center gap-3">
                   <Clock size={18} className="text-violet-500" />
                   <div>
@@ -1023,7 +1157,7 @@ function Painel({ session }) {
 
             {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} updatePostField={updatePostField} onGoClient={() => setTab("cliente")} />}
             {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} googleCalendars={googleCalendars} selectedCals={selectedCals} onToggleCal={toggleCal} onCarregarEventos={carregarEventos} />}
-            {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} />}
+            {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} uid={session.uid} />}
             {tab === "cliente" && <Clientes data={data} addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
             {tab === "acohub" && <AcoHubView data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} addReserva={addReserva} editReserva={editReserva} delReserva={delReserva} setPricing={setPricing} setTexto={setTexto} resetTexto={resetTexto} gerarProcessoReserva={gerarProcessoReserva} removerProcessoReserva={removerProcessoReserva} updateAcoClient={updateAcoClient} ensureAcoClient={ensureAcoClient} addAcoCliente={addAcoCliente} editAcoCliente={editAcoCliente} delAcoCliente={delAcoCliente} />}
             {["novello", "pessoal", "freela"].includes(tab) && (
@@ -1035,6 +1169,33 @@ function Painel({ session }) {
 
       {detailTask && (
         <TaskDetail task={detailTask} data={data} onEdit={editTask} onToggle={toggleTask} onSetStatus={setStatus} onDelete={(id) => { delTask(id); setDetailId(null); }} onClose={() => setDetailId(null)} />
+      )}
+
+      {avisoUndo && (
+        <div className="no-print fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-sm px-4 py-2 rounded-xl shadow-lg z-50">
+          {avisoUndo}
+        </div>
+      )}
+
+      {alertaPerda && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center p-4 z-[60]">
+          <div className="bg-white rounded-xl p-5 w-full max-w-md border-2 border-red-300">
+            <h3 className="font-bold text-red-700 mb-2 flex items-center gap-2"><AlertTriangle size={18} /> Opa, sumiu muita coisa</h3>
+            <p className="text-sm text-slate-600 mb-1">
+              O painel tinha <strong>{alertaPerda.antes} itens</strong> e agora tem <strong>{alertaPerda.agora}</strong>.
+              São <strong>{alertaPerda.antes - alertaPerda.agora} itens</strong> a menos de uma vez só.
+            </p>
+            <p className="text-sm text-slate-600 mb-4">Ainda não gravei nada. Foi você quem fez isso?</p>
+            <div className="flex flex-col gap-2">
+              <button onClick={desfazerPerda} className="w-full bg-violet-600 text-white rounded-lg py-2.5 text-sm font-medium hover:bg-violet-700">
+                Não foi, devolve como estava
+              </button>
+              <button onClick={confirmarPerda} className="w-full bg-white border border-slate-300 rounded-lg py-2 text-sm text-slate-600">
+                Fui eu, pode salvar assim
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showSettings && (
@@ -3375,7 +3536,7 @@ function Agenda({ data, addMeeting, editMeeting, delMeeting, googleEvents = [], 
   );
 }
 
-function Relatorio({ data, onRestore }) {
+function Relatorio({ data, onRestore, uid }) {
   const now = new Date();
   const [ym, setYm] = useState(`${now.getFullYear()}-${pad(now.getMonth() + 1)}`);
   const monthLabel = (() => { const [y, m] = ym.split("-"); return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }); })();
@@ -3485,6 +3646,8 @@ function Relatorio({ data, onRestore }) {
         </Section>
       )}
 
+      <CopiasBox uid={uid} onRestore={onRestore} />
+
       <BackupBox data={data} onRestore={onRestore} />
     </div>
   );
@@ -3495,6 +3658,76 @@ function Stat({ label, value }) {
     <div className="bg-violet-50 rounded-lg px-3 py-2">
       <p className="text-xs text-slate-500">{label}</p>
       <p className="text-lg font-bold text-violet-800">{value}</p>
+    </div>
+  );
+}
+
+function CopiasBox({ uid, onRestore }) {
+  const [abrir, setAbrir] = useState(false);
+  const [locais, setLocais] = useState([]);
+  const [nuvem, setNuvem] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const carregarListas = async () => {
+    setLocais(lerCopias());
+    setBuscando(true); setMsg("");
+    try {
+      const snaps = await getDocs(query(colVersoes(uid), orderBy("quando", "desc"), limit(20)));
+      setNuvem(snaps.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (e) {
+      setMsg("As versões na nuvem ainda não estão liberadas nas regras do Firestore. As cópias do navegador abaixo seguem funcionando.");
+    }
+    setBuscando(false);
+  };
+
+  const abrirBox = () => { const novo = !abrir; setAbrir(novo); if (novo) carregarListas(); };
+
+  const restaurar = (json, rotulo) => {
+    if (!window.confirm(`Restaurar a versão de ${rotulo}? O painel atual vai ser substituído por ela.`)) return;
+    try { onRestore(JSON.parse(json)); setMsg(`Restaurado de ${rotulo}.`); } catch (e) { setMsg("Essa cópia está ilegível."); }
+  };
+
+  const quando = (iso) => { try { return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch (_) { return iso; } };
+
+  return (
+    <div className="no-print bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5"><RotateCcw size={15} className="text-violet-500" /> Versões anteriores</h2>
+        <button onClick={abrirBox} className="text-violet-600 text-sm">{abrir ? "Fechar" : "Abrir"}</button>
+      </div>
+      {abrir && (
+        <div className="mt-3 space-y-4">
+          <p className="text-xs text-slate-500">O painel guarda cópias sozinho, de hora em hora. Se algo sumir, volte para uma delas aqui.</p>
+
+          <div>
+            <p className="text-xs font-semibold text-violet-600 uppercase tracking-wide mb-1">Na nuvem {buscando && <span className="text-slate-400 normal-case font-normal">buscando...</span>}</p>
+            {nuvem.length === 0 ? <p className="text-xs text-slate-400">Nenhuma versão na nuvem ainda.</p> :
+              nuvem.map((v) => (
+                <div key={v.id} className="flex items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
+                  <span className="text-sm flex-1">{quando(v.quando)}</span>
+                  <span className="text-xs text-slate-400">{v.itens} itens</span>
+                  <button onClick={() => restaurar(v.json, quando(v.quando))} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1 hover:border-violet-400">Restaurar</button>
+                </div>
+              ))}
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-violet-600 uppercase tracking-wide mb-1">Neste navegador</p>
+            {locais.length === 0 ? <p className="text-xs text-slate-400">Nenhuma cópia local ainda.</p> :
+              locais.map((c, i) => (
+                <div key={i} className="flex items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
+                  <span className="text-sm flex-1">{quando(c.quando)}</span>
+                  <span className="text-xs text-slate-400">{c.itens} itens</span>
+                  <button onClick={() => restaurar(c.json, quando(c.quando))} className="text-xs bg-white border border-slate-300 rounded-lg px-2 py-1 hover:border-violet-400">Restaurar</button>
+                </div>
+              ))}
+            <p className="text-xs text-slate-400 mt-1">Cópias locais ficam só neste computador e neste navegador.</p>
+          </div>
+
+          {msg && <p className="text-xs text-violet-600">{msg}</p>}
+        </div>
+      )}
     </div>
   );
 }
@@ -3520,6 +3753,8 @@ function BackupBox({ data, onRestore }) {
     try {
       const p = JSON.parse(imp);
       if (!p || !Array.isArray(p.tasks)) throw new Error("formato");
+      const quantos = contarItens(p);
+      if (!window.confirm(`Esse backup tem ${quantos} itens e vai substituir todo o painel atual. Confirma?`)) return;
       onRestore(p); setMsg("Dados restaurados com sucesso.");
     } catch (e) { setMsg("JSON inválido. Confira o texto colado."); }
   };
