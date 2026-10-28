@@ -439,6 +439,22 @@ function parsePostLine(raw) {
   return { date, tipo, desc: resto.trim() };
 }
 
+// Lê uma linha colada para virar subtarefa. Aproveita a limpeza do parseDemandaLine
+// (traço, bolinha, numeração, caixinha e data no começo) e ainda entende um tempo no fim
+// da linha, como "revisar textos 1.5h" ou "gravar vídeo (2h)".
+function parseSubtarefaLine(raw) {
+  const base = parseDemandaLine(raw);
+  if (!base) return null;
+  let titulo = base.titulo;
+  let estTime = null;
+  const m = titulo.match(/^(.*?)[\s\-–—|(:]*?(\d+(?:[.,]\d+)?)\s*h\s*\)?$/i);
+  if (m && m[1].trim()) {
+    titulo = m[1].trim().replace(/[\s\-–—|:]+$/, "");
+    estTime = Number(m[2].replace(",", "."));
+  }
+  return { titulo, date: base.date, estTime };
+}
+
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
 const ALLDAY_HOURS = 1;
@@ -975,7 +991,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v48</span>
+            <span className="text-[9px] text-slate-300 mt-1">v49</span>
           </div>
         </aside>
 
@@ -1895,6 +1911,31 @@ function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClo
     setSubs([...subs, { id: uid(), title: stitle.trim(), deadline: sdate || null, estTime: Number(stime) || 0, week: isMonthly ? Number(sweek) : null, done: false, workDate: null, externalOwner: false, ownerName: "" }]);
     setStitle(""); setSdate(TODAY); setStime("1"); setSweek(TODAY_WEEK);
   };
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteTime, setPasteTime] = useState("0");
+  const [pasteMsg, setPasteMsg] = useState("");
+
+  // Cola uma lista inteira de uma vez. Cada linha vira uma subtarefa.
+  const colarSubs = () => {
+    const itens = pasteText.split("\n").map(parseSubtarefaLine).filter((x) => x && x.titulo);
+    if (!itens.length) { setShowPaste(false); return; }
+    const padrao = Number(pasteTime) || 0;
+    const novas = itens.map((it) => ({
+      id: uid(),
+      title: it.titulo,
+      deadline: it.date || null,
+      estTime: it.estTime != null ? it.estTime : padrao,
+      week: isMonthly ? (it.date ? weekOfMonth(it.date) : Number(sweek)) : null,
+      done: false, workDate: null, externalOwner: false, ownerName: "",
+    }));
+    setSubs([...subs, ...novas]);
+    const comData = novas.filter((n) => n.deadline).length;
+    setPasteMsg(`${novas.length} ${novas.length === 1 ? "subtarefa adicionada" : "subtarefas adicionadas"}${comData ? `, ${comData} com prazo` : ""}.`);
+    setTimeout(() => setPasteMsg(""), 4000);
+    setPasteText(""); setShowPaste(false);
+  };
+
   const upSub = (id, patch) => setSubs(subs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   const delSub = (id) => setSubs(subs.filter((s) => s.id !== id));
   const toggleS = (s) => upSub(s.id, { done: !s.done, doneDate: !s.done ? TODAY : null });
@@ -2026,6 +2067,33 @@ function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClo
               <input type="number" min="0" step="0.5" value={stime} onChange={(e) => setStime(e.target.value)} placeholder="h" className="w-12 border border-slate-300 rounded-lg px-1 py-1.5 text-sm" />
               <button onClick={addSub} className="bg-violet-600 text-white rounded-lg px-3 text-sm"><Plus size={15} /></button>
             </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button onClick={() => setShowPaste(!showPaste)} className="text-xs text-violet-600 hover:text-violet-800 flex items-center gap-1">
+                <ClipboardList size={13} /> Colar lista de subtarefas
+              </button>
+              {pasteMsg && <span className="text-xs text-green-600">{pasteMsg}</span>}
+            </div>
+
+            {showPaste && (
+              <div className="bg-white rounded-lg p-2 border border-violet-200 space-y-1.5">
+                <p className="text-xs text-slate-500">
+                  Uma subtarefa por linha. Pode colar da ata ou do checklist, com traço, bolinha ou numeração, que eu limpo.
+                  Data no começo da linha vira prazo (20/08 ou 20/08/2026). Tempo no fim da linha vira as horas (1h, 1.5h ou (2h)).
+                </p>
+                <textarea
+                  value={pasteText}
+                  onChange={(e) => setPasteText(e.target.value)}
+                  placeholder={"- levantar referências 1h\n- 20/08 escrever roteiro 2h\n* gravar depoimento\n1. 25/08 revisar com o cliente 0.5h"}
+                  className="w-full h-32 border border-slate-300 rounded-lg p-2 text-xs"
+                />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={colarSubs} className="bg-violet-600 text-white rounded-lg px-3 py-1.5 text-xs font-medium">Importar</button>
+                  <button onClick={() => { setShowPaste(false); setPasteText(""); }} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs">Cancelar</button>
+                  <span className="text-xs text-slate-400 ml-auto">Horas para as linhas sem tempo:</span>
+                  <input type="number" min="0" step="0.5" value={pasteTime} onChange={(e) => setPasteTime(e.target.value)} className="w-14 border border-slate-300 rounded-lg px-1 py-1 text-xs" />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
