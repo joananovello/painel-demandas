@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail } from "firebase/auth";
 import { getFirestore, doc, collection, getDoc, getDocs, setDoc, deleteDoc, query, orderBy, limit } from "firebase/firestore";
-import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2, Contact, RotateCcw, Archive, ArrowLeft, ArrowUpCircle, ClipboardList } from "lucide-react";
+import { Calendar, Users, Building2, BookOpen, Heart, Zap, Plus, Trash2, Check, Clock, AlertTriangle, X, Settings, CalendarClock, CircleDot, Repeat, PauseCircle, PlayCircle, FileText, Printer, Copy, Download, Link2, Key, Eye, EyeOff, ExternalLink, StickyNote, Pencil, ListChecks, LogOut, GripVertical, Star, Undo2, Redo2, Contact, RotateCcw, Archive, ArrowLeft, ArrowUpCircle, ClipboardList, Play, Square, Timer } from "lucide-react";
 
 // ---------- Firebase ----------
 // Ao contrário do Supabase gratuito, o Firestore não pausa por inatividade.
@@ -138,17 +138,68 @@ function parseDemandaLine(raw) {
   return { titulo: l, date: null };
 }
 
-const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: null, acoClientes: [], acoTextos: null, postHours: null };
+// ---------- Cronômetro ----------
+// Cada item (demanda, subtarefa ou post) guarda suas sessões em `sessions`.
+// O cronômetro que está rodando fica num lugar só, em data.timer, para garantir um de cada vez.
+const LIMITE_SESSAO_MIN = 8 * 60; // acima disso, provavelmente ficou ligado sem querer
+
+const minutosDe = (item) => (item && item.sessions || []).reduce((n, s) => n + (s.minutos || 0), 0);
+const horasDe = (item) => Math.round((minutosDe(item) / 60) * 100) / 100;
+
+// Soma as horas reais de uma demanda: as dela e as das subtarefas.
+function horasReaisTask(t) {
+  if (!t) return 0;
+  const subs = (t.subtasks || []).reduce((n, s) => n + minutosDe(s), 0);
+  return Math.round(((minutosDe(t) + subs) / 60) * 100) / 100;
+}
+
+const fmtHoras = (h) => {
+  const total = Math.round((h || 0) * 60);
+  const hh = Math.floor(total / 60), mm = total % 60;
+  if (hh === 0) return `${mm}min`;
+  return mm === 0 ? `${hh}h` : `${hh}h${pad(mm)}`;
+};
+
+const fmtCrono = (seg) => {
+  const h = Math.floor(seg / 3600), m = Math.floor((seg % 3600) / 60), s = seg % 60;
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+};
+
+// Identifica um item de forma única, para o cronômetro saber onde gravar a sessão.
+const mesmoAlvo = (a, b) => a && b && a.tipo === b.tipo && a.taskId === b.taskId && a.subId === b.subId
+  && a.clientId === b.clientId && a.monthId === b.monthId && a.postId === b.postId;
+
+// Soma as horas reais de um cliente num mês (AAAA-MM), olhando demandas, subtarefas e posts.
+function horasDoClienteNoMes(data, clientId, ym) {
+  let min = 0;
+  const noMes = (s) => !ym || (s.inicio || "").slice(0, 7) === ym;
+  for (const t of data.tasks || []) {
+    if (t.clientId !== clientId) continue;
+    min += (t.sessions || []).filter(noMes).reduce((n, s) => n + (s.minutos || 0), 0);
+    for (const sub of t.subtasks || []) min += (sub.sessions || []).filter(noMes).reduce((n, s) => n + (s.minutos || 0), 0);
+  }
+  const c = (data.clients || []).find((x) => x.id === clientId);
+  for (const m of (c && c.socialMonths) || []) {
+    for (const p of m.posts || []) min += (p.sessions || []).filter(noMes).reduce((n, s) => n + (s.minutos || 0), 0);
+  }
+  return Math.round((min / 60) * 100) / 100;
+}
+
+const emptyData = { settings: { workHours: 8, stuckDays: 7 }, clients: [], tasks: [], meetings: [], priorities: [], acoReservas: [], acoPricing: null, acoClientes: [], acoTextos: null, postHours: null, timer: null };
 const migTasks = (ts) => (ts || []).map((t) => ({
   status: "ativa", recurrence: "none", createdAt: nowISO(), statusSince: nowISO(), ...t,
-  subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, externalOwner: false, ownerName: "", ...s })),
+  sessions: Array.isArray(t.sessions) ? t.sessions : [],
+  subtasks: (t.subtasks || []).map((s) => ({ estTime: 0, workDate: null, externalOwner: false, ownerName: "", sessions: Array.isArray(s.sessions) ? s.sessions : [], ...s })),
   notes: t.notes || "",
   doneDate: t.doneDate || (t.done ? (localDay(t.completedAt) || TODAY) : null),
   workDate: t.workDate || null,
   externalOwner: t.externalOwner || false,
   ownerName: t.ownerName || "",
 }));
-const migClients = (cs) => (cs || []).map((c) => ({ links: [], creds: [], notes: "", socialMonths: [], ...c }));
+const migClients = (cs) => (cs || []).map((c) => ({
+  links: [], creds: [], notes: "", horasContratadas: null, ...c,
+  socialMonths: (c.socialMonths || []).map((m) => ({ ...m, posts: (m.posts || []).map((p) => ({ sessions: [], ...p })) })),
+}));
 
 const POST_TIPOS = ["Arte única", "Carrossel", "Reels", "Stories", "BTS", "WhatsApp", "Artigo LinkedIn", "Outro"];
 const POST_STATUS = {
@@ -946,6 +997,11 @@ function Painel({ session }) {
   const podeDesfazer = historyRef.current.length > 0;
   const podeRefazer = futureRef.current.length > 0;
 
+  // Chave geral do cronômetro. Desligada, o play some de todos os lugares,
+  // mas o tempo já registrado continua guardado.
+  const cronoLigado = data.settings.cronoOn !== false;
+  const cronoFn = cronoLigado ? iniciarTimer : null;
+
   const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours, data.clients, mesclarHoras(data.postHours)), [data]);
 
   const addTask = (t) => setData((d) => ({ ...d, tasks: [...d.tasks, { id: uid(), done: false, status: "ativa", recurrence: "none", notes: "", subtasks: [], createdAt: nowISO(), statusSince: nowISO(), workDate: null, externalOwner: false, ownerName: "", ...t }] }));
@@ -983,6 +1039,68 @@ function Painel({ session }) {
   const editMeeting = (id, patch) => setData((d) => ({ ...d, meetings: d.meetings.map((m) => (m.id === id ? { ...m, ...patch } : m)) }));
   const delMeeting = (id) => setData((d) => ({ ...d, meetings: d.meetings.filter((m) => m.id !== id) }));
   const setPostHours = (novo) => setData((d) => ({ ...d, postHours: novo }));
+
+  // ---------- Cronômetro ----------
+  // Grava uma sessão no item certo, seja demanda, subtarefa ou post.
+  const gravarSessao = (d, alvo, sessao) => {
+    if (alvo.tipo === "post") {
+      return { ...d, clients: d.clients.map((c) => c.id !== alvo.clientId ? c : {
+        ...c, socialMonths: (c.socialMonths || []).map((m) => m.id !== alvo.monthId ? m : {
+          ...m, posts: (m.posts || []).map((p) => p.id !== alvo.postId ? p : { ...p, sessions: [...(p.sessions || []), sessao] }),
+        }),
+      })};
+    }
+    return { ...d, tasks: d.tasks.map((t) => {
+      if (t.id !== alvo.taskId) return t;
+      if (alvo.tipo === "sub") {
+        return { ...t, subtasks: (t.subtasks || []).map((sb) => sb.id !== alvo.subId ? sb : { ...sb, sessions: [...(sb.sessions || []), sessao] }) };
+      }
+      return { ...t, sessions: [...(t.sessions || []), sessao] };
+    })};
+  };
+
+  // Fecha o cronômetro que está rodando e devolve os dados já com a sessão gravada.
+  const fecharTimer = (d, minutosForcados) => {
+    const tm = d.timer;
+    if (!tm) return d;
+    const min = minutosForcados != null ? minutosForcados
+      : Math.max(1, Math.round((Date.now() - new Date(tm.inicio).getTime()) / 60000));
+    const sessao = { id: uid(), inicio: tm.inicio, fim: new Date().toISOString(), minutos: min };
+    return { ...gravarSessao(d, tm, sessao), timer: null };
+  };
+
+  const iniciarTimer = (alvo) => setData((d) => {
+    const base = d.timer ? fecharTimer(d) : d; // um de cada vez: encerra o anterior
+    if (d.timer && mesmoAlvo(d.timer, alvo)) return base; // clicou no mesmo: só para
+    return { ...base, timer: { ...alvo, inicio: new Date().toISOString() } };
+  });
+
+  const pararTimer = (minutosForcados) => setData((d) => fecharTimer(d, minutosForcados));
+  const descartarTimer = () => setData((d) => ({ ...d, timer: null }));
+
+  // Lançamento manual, para quando você esqueceu de ligar.
+  const lancarHoras = (alvo, minutos, quando) => setData((d) => {
+    if (!minutos || minutos <= 0) return d;
+    const dia = quando || TODAY;
+    const sessao = { id: uid(), inicio: `${dia}T12:00:00.000Z`, fim: `${dia}T12:00:00.000Z`, minutos, manual: true };
+    return gravarSessao(d, alvo, sessao);
+  });
+
+  const apagarSessao = (alvo, sessaoId) => setData((d) => {
+    const tira = (arr) => (arr || []).filter((x) => x.id !== sessaoId);
+    if (alvo.tipo === "post") {
+      return { ...d, clients: d.clients.map((c) => c.id !== alvo.clientId ? c : {
+        ...c, socialMonths: (c.socialMonths || []).map((m) => m.id !== alvo.monthId ? m : {
+          ...m, posts: (m.posts || []).map((p) => p.id !== alvo.postId ? p : { ...p, sessions: tira(p.sessions) }),
+        }),
+      })};
+    }
+    return { ...d, tasks: d.tasks.map((t) => {
+      if (t.id !== alvo.taskId) return t;
+      if (alvo.tipo === "sub") return { ...t, subtasks: (t.subtasks || []).map((sb) => sb.id !== alvo.subId ? sb : { ...sb, sessions: tira(sb.sessions) }) };
+      return { ...t, sessions: tira(t.sessions) };
+    })};
+  });
   const setSetting = (k, v) => setData((d) => ({ ...d, settings: { ...d.settings, [k]: v } }));
   const togglePriority = (id) => setData((d) => {
     const cur = d.priorities || [];
@@ -1097,7 +1215,11 @@ function Painel({ session }) {
   return (
     <div className="min-h-screen bg-violet-50 text-slate-800">
       <style>{`@media print { .no-print{display:none !important;} body{background:#fff;} }`}</style>
-      <div className="flex">
+      {data.timer && (
+        <BarraCronometro timer={data.timer} onParar={pararTimer} onDescartar={descartarTimer} />
+      )}
+
+      <div className="flex" style={data.timer ? { paddingTop: 40 } : undefined}>
         <aside className="no-print sticky top-0 h-screen w-16 shrink-0 bg-white border-r border-slate-200 flex flex-col items-center py-4 gap-1">
           <div className="w-9 h-9 rounded-xl bg-violet-600 text-white flex items-center justify-center mb-3 shrink-0 font-bold text-lg">P</div>
           {TABS.map((t) => {
@@ -1114,7 +1236,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v50</span>
+            <span className="text-[9px] text-slate-300 mt-1">v51</span>
           </div>
         </aside>
 
@@ -1155,20 +1277,20 @@ function Painel({ session }) {
               </div>
             </header>
 
-            {tab === "hoje" && <Hoje data={data} sched={sched} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} updatePostField={updatePostField} onGoClient={() => setTab("cliente")} />}
+            {tab === "hoje" && <Hoje data={data} sched={sched} iniciarTimer={cronoFn} toggleTask={toggleTask} toggleSubtask={toggleSubtask} editTask={editTask} editSubtask={editSubtask} setStatus={setStatus} onOpen={setDetailId} togglePriority={togglePriority} updatePostField={updatePostField} onGoClient={() => setTab("cliente")} />}
             {tab === "agenda" && <Agenda data={data} addMeeting={addMeeting} editMeeting={editMeeting} delMeeting={delMeeting} googleEvents={googleEvents} googleStatus={googleStatus} googleMsg={googleMsg} onConnectGoogle={connectGoogle} onDisconnectGoogle={disconnectGoogle} onImportGoogle={importGoogleEvents} googleCalendars={googleCalendars} selectedCals={selectedCals} onToggleCal={toggleCal} onCarregarEventos={carregarEventos} />}
             {tab === "relatorio" && <Relatorio data={data} onRestore={restoreData} uid={session.uid} />}
-            {tab === "cliente" && <Clientes data={data} addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
-            {tab === "acohub" && <AcoHubView data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} addReserva={addReserva} editReserva={editReserva} delReserva={delReserva} setPricing={setPricing} setTexto={setTexto} resetTexto={resetTexto} gerarProcessoReserva={gerarProcessoReserva} removerProcessoReserva={removerProcessoReserva} updateAcoClient={updateAcoClient} ensureAcoClient={ensureAcoClient} addAcoCliente={addAcoCliente} editAcoCliente={editAcoCliente} delAcoCliente={delAcoCliente} />}
+            {tab === "cliente" && <Clientes data={data} iniciarTimer={cronoFn} lancarHoras={lancarHoras} apagarSessao={apagarSessao} addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} addClient={addClient} delClient={delClient} updateClient={updateClient} stuckDays={sd} onOpen={setDetailId} onCriarModeloSocial={criarModeloSocial} />}
+            {tab === "acohub" && <AcoHubView data={data} iniciarTimer={cronoFn} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} addReserva={addReserva} editReserva={editReserva} delReserva={delReserva} setPricing={setPricing} setTexto={setTexto} resetTexto={resetTexto} gerarProcessoReserva={gerarProcessoReserva} removerProcessoReserva={removerProcessoReserva} updateAcoClient={updateAcoClient} ensureAcoClient={ensureAcoClient} addAcoCliente={addAcoCliente} editAcoCliente={editAcoCliente} delAcoCliente={delAcoCliente} />}
             {["novello", "pessoal", "freela"].includes(tab) && (
-              <AreaView area={tab} data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} />
+              <AreaView area={tab} data={data} addTask={addTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} stuckDays={sd} onOpen={setDetailId} iniciarTimer={cronoFn} />
             )}
           </div>
         </main>
       </div>
 
       {detailTask && (
-        <TaskDetail task={detailTask} data={data} onEdit={editTask} onToggle={toggleTask} onSetStatus={setStatus} onDelete={(id) => { delTask(id); setDetailId(null); }} onClose={() => setDetailId(null)} />
+        <TaskDetail task={detailTask} data={data} onEdit={editTask} onToggle={toggleTask} onSetStatus={setStatus} onDelete={(id) => { delTask(id); setDetailId(null); }} onClose={() => setDetailId(null)} iniciarTimer={cronoFn} lancarHoras={lancarHoras} apagarSessao={apagarSessao} />
       )}
 
       {avisoUndo && (
@@ -1241,6 +1363,18 @@ function ConfiguracoesView({ data, setSetting, postHours, onSavePostHours, onClo
               onChange={(e) => setSetting("stuckDays", Number(e.target.value) || 7)}
               className="w-full border border-slate-300 rounded-lg px-3 py-2" />
             <p className="text-xs text-slate-500 mt-2">Demandas em espera ou sem prazo ganham um aviso laranja depois desse tempo paradas.</p>
+
+            <div className="mt-5 pt-4 border-t border-slate-100">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={data.settings.cronoOn !== false}
+                  onChange={(e) => setSetting("cronoOn", e.target.checked)} className="w-4 h-4 accent-violet-600" />
+                <span className="text-sm font-medium">Mostrar o cronômetro</span>
+              </label>
+              <p className="text-xs text-slate-500 mt-1">
+                Desligando, o botão de play some das demandas, subtarefas e posts. O tempo que você já registrou
+                continua guardado e volta a aparecer quando religar.
+              </p>
+            </div>
           </div>
         )}
 
@@ -1290,13 +1424,129 @@ function ConfiguracoesView({ data, setSetting, postHours, onSavePostHours, onClo
   );
 }
 
+// Faixa fixa no topo enquanto um cronômetro está rodando.
+function BarraCronometro({ timer, onParar, onDescartar }) {
+  const [seg, setSeg] = useState(0);
+  const [perguntando, setPerguntando] = useState(false);
+  const [quanto, setQuanto] = useState("");
+
+  useEffect(() => {
+    const calc = () => setSeg(Math.max(0, Math.floor((Date.now() - new Date(timer.inicio).getTime()) / 1000)));
+    calc();
+    const id = setInterval(calc, 1000);
+    return () => clearInterval(id);
+  }, [timer.inicio]);
+
+  const minutos = Math.floor(seg / 60);
+  const demais = minutos >= LIMITE_SESSAO_MIN;
+
+  // Passou de 8 horas: provavelmente ficou ligado sem querer, então pergunta antes de gravar.
+  if (demais || perguntando) {
+    return (
+      <div className="no-print fixed top-0 left-0 right-0 bg-amber-500 text-white px-4 py-2 z-[70] flex items-center gap-3 flex-wrap">
+        <AlertTriangle size={16} className="shrink-0" />
+        <span className="text-sm flex-1 min-w-0">
+          O cronômetro de <strong>{timer.titulo}</strong> está ligado há {fmtCrono(seg)}. Quantas horas foram de verdade?
+        </span>
+        <input type="number" min="0" step="0.25" value={quanto} onChange={(e) => setQuanto(e.target.value)}
+          placeholder="horas" className="w-20 rounded px-2 py-1 text-sm text-slate-800" />
+        <button onClick={() => onParar(Math.round((Number(quanto) || 0) * 60))} disabled={!quanto}
+          className="bg-white text-amber-700 rounded-lg px-3 py-1 text-sm font-medium disabled:opacity-50">Lançar</button>
+        <button onClick={onDescartar} className="bg-amber-600 rounded-lg px-3 py-1 text-sm">Descartar</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="no-print fixed top-0 left-0 right-0 bg-violet-700 text-white px-4 py-2 z-[70] flex items-center gap-3">
+      <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse shrink-0" />
+      <span className="text-sm flex-1 min-w-0 truncate">{timer.titulo}</span>
+      <span className="font-mono text-base font-semibold tabular-nums">{fmtCrono(seg)}</span>
+      <button onClick={() => onParar()} className="bg-white text-violet-700 rounded-lg px-3 py-1 text-sm font-medium hover:bg-violet-50 shrink-0">
+        Parar
+      </button>
+      {perguntando === false && (
+        <button onClick={() => setPerguntando(true)} title="Corrigir o tempo na mão" className="text-violet-200 hover:text-white shrink-0"><Pencil size={14} /></button>
+      )}
+    </div>
+  );
+}
+
+// Botão de play/stop que aparece em cada item.
+function BotaoCrono({ alvo, timer, onIniciar, mini }) {
+  const rodando = mesmoAlvo(timer, alvo);
+  const tam = mini ? 12 : 14;
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onIniciar(alvo); }}
+      title={rodando ? "Parar o cronômetro" : "Começar a contar o tempo"}
+      className={`shrink-0 rounded-md flex items-center justify-center transition-colors ${mini ? "w-5 h-5" : "w-6 h-6"} ${
+        rodando ? "bg-red-500 text-white hover:bg-red-600" : "text-slate-300 hover:text-violet-600 hover:bg-violet-50"}`}
+    >
+      {rodando ? <Square size={tam} /> : <Play size={tam} />}
+    </button>
+  );
+}
+
+// Lista de sessões de um item, com lançamento manual.
+function SessoesBox({ alvo, item, onLancar, onApagar }) {
+  const [abrir, setAbrir] = useState(false);
+  const [horas, setHoras] = useState("");
+  const [dia, setDia] = useState(TODAY);
+  const sess = (item && item.sessions) || [];
+  const total = horasDe(item);
+
+  const lancar = () => {
+    const min = Math.round((Number(horas) || 0) * 60);
+    if (min > 0) { onLancar(alvo, min, dia); setHoras(""); }
+  };
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs font-semibold text-violet-600 uppercase tracking-wide flex items-center gap-1">
+          <Clock size={12} /> Tempo gasto
+        </span>
+        <span className="text-sm font-bold text-violet-800">{total > 0 ? fmtHoras(total) : "nada ainda"}</span>
+        {sess.length > 0 && (
+          <button onClick={() => setAbrir(!abrir)} className="text-xs text-slate-400 hover:text-violet-600">
+            {abrir ? "ocultar" : `${sess.length} ${sess.length === 1 ? "sessão" : "sessões"}`}
+          </button>
+        )}
+      </div>
+
+      {abrir && sess.length > 0 && (
+        <div className="mt-1 bg-slate-50 rounded-lg p-2">
+          {sess.slice().reverse().map((x) => (
+            <div key={x.id} className="flex items-center gap-2 py-1 border-b border-slate-100 last:border-0 text-xs">
+              <span className="text-slate-500">{fmtBR((x.inicio || "").slice(0, 10))}</span>
+              <span className="flex-1 text-slate-700 font-medium">{fmtHoras((x.minutos || 0) / 60)}</span>
+              {x.manual && <span className="text-slate-300">na mão</span>}
+              <button onClick={() => onApagar(alvo, x.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={12} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-1.5 mt-1.5">
+        <span className="text-xs text-slate-400">Lançar na mão:</span>
+        <input type="number" min="0" step="0.25" value={horas} onChange={(e) => setHoras(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") lancar(); }}
+          placeholder="h" className="w-14 border border-slate-300 rounded px-1.5 py-1 text-xs" />
+        <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-xs" />
+        <button onClick={lancar} disabled={!horas} className="bg-violet-600 text-white rounded px-2 py-1 text-xs disabled:opacity-40">Somar</button>
+      </div>
+    </div>
+  );
+}
+
 function subProgress(t) {
   const subs = t.subtasks || [];
   if (!subs.length) return null;
   return `${subs.filter((s) => s.done).length}/${subs.length}`;
 }
 
-function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, todayHours, draggable, onDragStart, onTogglePriority, isPriority }) {
+function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, todayHours, draggable, onDragStart, onTogglePriority, isPriority, timer, onIniciarCrono }) {
   const u = URG[t.urgency];
   const client = t.clientId ? data.clients.find((c) => c.id === t.clientId) : null;
   const tag = t.area === "cliente" ? (client ? client.name : "Cliente") : AREAS[t.area].label;
@@ -1321,6 +1571,9 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
         <p onClick={() => onOpen && onOpen(t.id)} className={`text-sm flex-1 leading-snug cursor-pointer hover:text-violet-700 ${t.done ? "line-through text-slate-400" : ""}`}>
           {recurring && <Repeat size={11} className="inline text-violet-400 mr-0.5" />}{t.title}
         </p>
+        {onIniciarCrono && !t.done && (
+          <BotaoCrono alvo={{ tipo: "task", taskId: t.id, titulo: t.title }} timer={timer} onIniciar={onIniciarCrono} mini />
+        )}
         {onTogglePriority && !t.done && (
           <button onClick={() => onTogglePriority(t.id)} title={isPriority ? "Remover das prioridades" : "Marcar como prioridade"} className="shrink-0 mt-0.5">
             <Star size={14} className={isPriority ? "fill-amber-400 text-amber-400" : "text-slate-300 hover:text-amber-400"} />
@@ -1332,6 +1585,7 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
         {t.externalOwner && <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 font-medium">cobrar: {t.ownerName || "externo"}</span>}
         {!t.externalOwner && todayHours > 0 && <span className="text-xs font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
         {t.deadline && <span className={`text-xs ${overdue ? "text-red-600 font-medium" : "text-slate-400"}`}>{overdue ? "vencida " : "entrega "}{fmtBR(t.deadline)}</span>}
+        {horasReaisTask(t) > 0 && <span className="text-xs text-violet-600 flex items-center gap-0.5"><Clock size={10} />{fmtHoras(horasReaisTask(t))}</span>}
         {prog && <span className="text-xs text-violet-500 flex items-center gap-0.5"><ListChecks size={10} />{prog}</span>}
         {(t.notes || "").trim() && <StickyNote size={10} className="text-slate-300" />}
         {latePlan && <span className="text-xs text-red-500">planejado após prazo</span>}
@@ -1354,7 +1608,7 @@ function Card({ t, data, onToggle, onStatus, onOpen, onSetDoneDate, stuckDays, t
   );
 }
 
-function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, todayHours, draggable, onDragStart, onTogglePriority, isPriority }) {
+function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, todayHours, draggable, onDragStart, onTogglePriority, isPriority, timer, onIniciarCrono }) {
   const u = URG[task.urgency];
   const client = task.clientId ? data.clients.find((c) => c.id === task.clientId) : null;
   const tag = task.area === "cliente" ? (client ? client.name : "Cliente") : AREAS[task.area].label;
@@ -1375,6 +1629,9 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
           <p onClick={() => onOpen && onOpen(task.id)} className={`text-sm leading-snug cursor-pointer hover:text-violet-700 ${sub.done ? "line-through text-slate-400" : ""}`}>{sub.title}</p>
           <p className="text-xs text-slate-400 truncate">{tag} • {task.title}</p>
         </div>
+        {onIniciarCrono && !sub.done && (
+          <BotaoCrono alvo={{ tipo: "sub", taskId: task.id, subId: sub.id, titulo: sub.title }} timer={timer} onIniciar={onIniciarCrono} mini />
+        )}
         {onTogglePriority && !sub.done && (
           <button onClick={() => onTogglePriority(task.id)} title={isPriority ? "Remover das prioridades" : "Marcar como prioridade"} className="shrink-0 mt-0.5">
             <Star size={14} className={isPriority ? "fill-amber-400 text-amber-400" : "text-slate-300 hover:text-amber-400"} />
@@ -1386,6 +1643,7 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
         {!sub.externalOwner && todayHours > 0 && <span className="font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
         {sub.deadline && <span className={overdue ? "text-red-600 font-medium" : "text-slate-400"}>{overdue ? "vencida " : "entrega "}{fmtBR(sub.deadline)}</span>}
         {sub.estTime > 0 && <span className="text-slate-300">{sub.estTime}h</span>}
+        {horasDe(sub) > 0 && <span className="text-violet-600 flex items-center gap-0.5"><Clock size={10} />{fmtHoras(horasDe(sub))}</span>}
         {latePlan && <span className="text-red-500">planejado após prazo</span>}
         <span className="text-violet-400 flex items-center gap-0.5"><ListChecks size={10} />subtarefa</span>
       </div>
@@ -1399,7 +1657,7 @@ function SubtaskCard({ task, sub, data, onToggleSub, onOpen, onSetSubDoneDate, t
   );
 }
 
-function PostCard({ un, onAdvance, onOpenClient, todayHours, draggable, onDragStart, onTogglePriority, isPriority }) {
+function PostCard({ un, onAdvance, onOpenClient, todayHours, draggable, onDragStart, onTogglePriority, isPriority, timer, onIniciarCrono }) {
   const p = un.post;
   const st = POST_STATUS[p.status] || {};
   const overdue = p.date && p.date < TODAY;
@@ -1417,6 +1675,9 @@ function PostCard({ un, onAdvance, onOpenClient, todayHours, draggable, onDragSt
           <p onClick={() => onOpenClient && onOpenClient(un.clientId)} className="text-sm leading-snug cursor-pointer hover:text-pink-700">{p.desc || "(sem descrição)"}</p>
           <p className="text-xs text-slate-400 truncate">{un.clientName} • {p.tipo}</p>
         </div>
+        {onIniciarCrono && (
+          <BotaoCrono alvo={{ tipo: "post", clientId: un.clientId, monthId: un.monthId, postId: un.postId, titulo: p.desc || "Post" }} timer={timer} onIniciar={onIniciarCrono} mini />
+        )}
         {onTogglePriority && (
           <button onClick={() => onTogglePriority(un.id)} title={isPriority ? "Remover das prioridades" : "Marcar como prioridade"} className="shrink-0 mt-0.5">
             <Star size={14} className={isPriority ? "fill-amber-400 text-amber-400" : "text-slate-300 hover:text-amber-400"} />
@@ -1428,6 +1689,7 @@ function PostCard({ un, onAdvance, onOpenClient, todayHours, draggable, onDragSt
         {todayHours > 0 && <span className="font-semibold text-violet-700">{todayHours.toFixed(1)}h hoje</span>}
         {p.date && <span className={overdue ? "text-red-600 font-medium" : "text-slate-400"}>{overdue ? "atrasado " : "sai "}{fmtBR(p.date)}</span>}
         <span className="text-slate-300">restam {un.estTime}h</span>
+        {horasDe(p) > 0 && <span className="text-violet-600 flex items-center gap-0.5"><Clock size={10} />{fmtHoras(horasDe(p))}</span>}
         {latePlan && <span className="text-red-500">após a data</span>}
         <span className="text-pink-400 flex items-center gap-0.5"><ListChecks size={10} />post</span>
       </div>
@@ -1456,7 +1718,7 @@ function KColumn({ title, count, accent, today, hours, over, onDragOver, onDrop,
   );
 }
 
-function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority, updatePostField, onGoClient }) {
+function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, setStatus, onOpen, togglePriority, updatePostField, onGoClient, iniciarTimer }) {
   const wh = data.settings.workHours;
   const sd = data.settings.stuckDays;
   const tasks = data.tasks;
@@ -1600,10 +1862,10 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
           <KColumn title="A fazer" count={todoUnits.length} accent="text-violet-700" today>
             {todoUnits.length === 0 ? <p className="text-xs text-slate-400 px-1">Nada travado para hoje.</p> :
               todoUnits.map((un) => un.kind === "post"
-                ? <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.id)} />
+                ? <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.id)} timer={data.timer} onIniciarCrono={iniciarTimer} />
                 : un.sub
-                  ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.taskId)} />
-                  : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.task.id)} />)}
+                  ? <SubtaskCard key={un.id} task={un.task} sub={un.sub} data={data} onToggleSub={toggleSubtask} onOpen={onOpen} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.taskId)} timer={data.timer} onIniciarCrono={iniciarTimer} />
+                  : <Card key={un.id} t={un.task} data={data} onToggle={toggleTask} onStatus={setStatus} onOpen={onOpen} stuckDays={sd} todayHours={un.hoje} onTogglePriority={togglePriority} isPriority={priorities.includes(un.task.id)} timer={data.timer} onIniciarCrono={iniciarTimer} />)}
           </KColumn>
           <KColumn title="Em espera" count={esperaT.length} accent="text-slate-500">
             {esperaT.length === 0 ? <p className="text-xs text-slate-400 px-1">Vazio.</p> :
@@ -1640,7 +1902,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
               >
                 {d.meetings.map((m) => <MeetingCard key={m.id} m={m} />)}
                 {d.posts.map((un) => (
-                  <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} draggable onDragStart={(e) => startDrag(e, "post", null, null, un)} todayHours={d.key === TODAY ? (sched.perUnitToday[un.id] || 0) : 0} onTogglePriority={togglePriority} isPriority={priorities.includes(un.id)} />
+                  <PostCard key={un.id} un={un} onAdvance={avancarPost} onOpenClient={onGoClient} draggable onDragStart={(e) => startDrag(e, "post", null, null, un)} todayHours={d.key === TODAY ? (sched.perUnitToday[un.id] || 0) : 0} onTogglePriority={togglePriority} isPriority={priorities.includes(un.id)} timer={data.timer} onIniciarCrono={iniciarTimer} />
                 ))}
                 {d.subs.map(({ task, sub }) => (
                   <SubtaskCard
@@ -1650,6 +1912,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
                     onDragStart={(e) => startDrag(e, "sub", task.id, sub.id)}
                     todayHours={d.key === TODAY ? (sched.perUnitToday[`${task.id}::${sub.id}`] || 0) : 0}
                     onTogglePriority={togglePriority} isPriority={priorities.includes(task.id)}
+                    timer={data.timer} onIniciarCrono={iniciarTimer}
                   />
                 ))}
                 {d.tasks.map((t) => (
@@ -1660,6 +1923,7 @@ function Hoje({ data, sched, toggleTask, toggleSubtask, editTask, editSubtask, s
                     onDragStart={(e) => startDrag(e, "task", t.id, null)}
                     stuckDays={sd}
                     onTogglePriority={togglePriority} isPriority={priorities.includes(t.id)}
+                    timer={data.timer} onIniciarCrono={iniciarTimer}
                   />
                 ))}
                 {d.tasks.length === 0 && d.subs.length === 0 && d.meetings.length === 0 && d.posts.length === 0 && (
@@ -1917,7 +2181,7 @@ function MeetingCard({ m }) {
   );
 }
 
-function TaskRow({ t, data, extra, overdue, muted, onToggle, onDelete, onStatus, onOpen, stuckDays }) {
+function TaskRow({ t, data, extra, overdue, muted, onToggle, onDelete, onStatus, onOpen, stuckDays, iniciarTimer }) {
   const u = URG[t.urgency];
   const client = t.clientId ? data.clients.find((c) => c.id === t.clientId) : null;
   const tag = t.area === "cliente" ? (client ? client.name : "Cliente") : AREAS[t.area].label;
@@ -1941,6 +2205,7 @@ function TaskRow({ t, data, extra, overdue, muted, onToggle, onDelete, onStatus,
           <span className={`text-xs px-1.5 py-0.5 rounded ${u.bg} ${u.text}`}>{u.label}</span>
           <span className="text-xs text-slate-400">{tag}</span>
           {t.scope && <span className="text-xs text-slate-300">{SCOPE[t.scope]}</span>}
+          {horasReaisTask(t) > 0 && <span className="text-xs text-violet-700 font-medium flex items-center gap-0.5"><Clock size={11} />{fmtHoras(horasReaisTask(t))}</span>}
           {prog && <span className="text-xs text-violet-500 flex items-center gap-0.5"><ListChecks size={11} />{prog}</span>}
           {recurring && <span className="text-xs text-violet-400">{REC[t.recurrence]}</span>}
           {overdue && <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium">vencida {fmtBR(t.deadline)}</span>}
@@ -1948,6 +2213,7 @@ function TaskRow({ t, data, extra, overdue, muted, onToggle, onDelete, onStatus,
         </div>
       </div>
       {extra}
+      {iniciarTimer && !t.done && <BotaoCrono alvo={{ tipo: "task", taskId: t.id, titulo: t.title }} timer={data.timer} onIniciar={iniciarTimer} />}
       {onOpen && <button onClick={() => onOpen(t.id)} className="shrink-0 text-slate-300 hover:text-violet-600" title="Abrir / editar"><Pencil size={14} /></button>}
       {onStatus && !t.done && (
         <button onClick={() => onStatus(t.id, t.status === "espera" ? "ativa" : "espera")} title={t.status === "espera" ? "Reativar" : "Mover para espera"} className="shrink-0 text-slate-300 hover:text-violet-600">
@@ -1959,14 +2225,14 @@ function TaskRow({ t, data, extra, overdue, muted, onToggle, onDelete, onStatus,
   );
 }
 
-function TaskGroups({ tasks, data, onToggle, onDelete, onStatus, onOpen, stuckDays, groupByScope }) {
+function TaskGroups({ tasks, data, onToggle, onDelete, onStatus, onOpen, stuckDays, groupByScope, iniciarTimer }) {
   const [showDone, setShowDone] = useState(false);
   const active = tasks.filter((t) => !t.done && t.status !== "espera" && !noBanco(t));
   const espera = tasks.filter((t) => !t.done && t.status === "espera");
   const banco = tasks.filter((t) => !t.done && noBanco(t));
   const done = tasks.filter((t) => t.done);
   const sortFn = (a, b) => URG[b.urgency].rank - URG[a.urgency].rank || (a.deadline || "9").localeCompare(b.deadline || "9");
-  const row = (t) => <TaskRow key={t.id} t={t} data={data} stuckDays={stuckDays} onToggle={onToggle} onDelete={onDelete} onStatus={onStatus} onOpen={onOpen} overdue={!t.done && t.deadline && t.deadline < TODAY} extra={dlExtra(t)} />;
+  const row = (t) => <TaskRow key={t.id} t={t} data={data} stuckDays={stuckDays} onToggle={onToggle} onDelete={onDelete} onStatus={onStatus} onOpen={onOpen} overdue={!t.done && t.deadline && t.deadline < TODAY} extra={dlExtra(t)} iniciarTimer={iniciarTimer} />;
 
   return (
     <div className="space-y-3">
@@ -2056,7 +2322,7 @@ function TaskForm({ area, clients, onAdd, onClose }) {
   );
 }
 
-function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClose }) {
+function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClose, iniciarTimer, lancarHoras, apagarSessao }) {
   const t = task;
   const isMonthly = t.scope === "mes";
   const subs = t.subtasks || [];
@@ -2124,6 +2390,7 @@ function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClo
         <input value={s.title} onChange={(e) => upSub(s.id, { title: e.target.value })} className={`flex-1 min-w-0 text-sm border-b border-transparent focus:border-slate-300 outline-none ${s.done ? "line-through text-slate-400" : ""}`} />
         <input type="date" value={s.deadline || ""} onChange={(e) => upSub(s.id, { deadline: e.target.value || null })} className="text-xs border border-slate-200 rounded px-1 py-0.5 w-24 shrink-0" />
         <input type="number" min="0" step="0.5" value={s.estTime || ""} onChange={(e) => upSub(s.id, { estTime: Number(e.target.value) || 0 })} placeholder="h" className="text-xs border border-slate-200 rounded px-1 py-0.5 w-10 shrink-0" />
+        {iniciarTimer && !s.done && <BotaoCrono alvo={{ tipo: "sub", taskId: t.id, subId: s.id, titulo: s.title }} timer={data.timer} onIniciar={iniciarTimer} mini />}
         <button onClick={() => delSub(s.id)} className="text-slate-300 hover:text-red-500 shrink-0"><Trash2 size={13} /></button>
       </div>
       <div className="flex items-center gap-2 mt-1 pl-6">
@@ -2134,6 +2401,7 @@ function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClo
         {s.externalOwner && (
           <input value={s.ownerName || ""} onChange={(e) => upSub(s.id, { ownerName: e.target.value })} placeholder="Nome" className="flex-1 border border-slate-200 rounded px-2 py-0.5 text-xs" />
         )}
+        {horasDe(s) > 0 && <span className="text-xs text-violet-700 font-medium ml-auto flex items-center gap-0.5"><Clock size={10} />{fmtHoras(horasDe(s))}</span>}
       </div>
     </div>
   );
@@ -2192,6 +2460,26 @@ function TaskDetail({ task, data, onEdit, onToggle, onSetStatus, onDelete, onClo
           <div className="mt-2 flex items-center gap-2">
             <span className="text-xs text-slate-500">Concluída em</span>
             <input type="date" value={t.doneDate || ""} onChange={(e) => onEdit(t.id, { doneDate: e.target.value || null })} className="text-xs border border-slate-300 rounded px-2 py-1" />
+          </div>
+        )}
+
+        {iniciarTimer && (
+          <div className="mt-4 bg-violet-50 rounded-lg p-3 border border-violet-100">
+            <div className="flex items-center gap-2 flex-wrap">
+              <BotaoCrono alvo={{ tipo: "task", taskId: t.id, titulo: t.title }} timer={data.timer} onIniciar={iniciarTimer} />
+              <span className="text-sm text-slate-600 flex-1">
+                {mesmoAlvo(data.timer, { tipo: "task", taskId: t.id, subId: undefined, clientId: undefined, monthId: undefined, postId: undefined })
+                  ? "Contando agora" : "Começar a contar o tempo"}
+              </span>
+              <span className="text-xs text-slate-400">
+                estimado {t.estTime || 0}h
+                {horasReaisTask(t) > 0 && <strong className="text-violet-700"> · real {fmtHoras(horasReaisTask(t))}</strong>}
+              </span>
+            </div>
+            <SessoesBox alvo={{ tipo: "task", taskId: t.id }} item={t} onLancar={lancarHoras} onApagar={apagarSessao} />
+            {(t.subtasks || []).some((x) => minutosDe(x) > 0) && (
+              <p className="text-xs text-slate-400 mt-1">O total real acima já inclui o tempo das subtarefas.</p>
+            )}
           </div>
         )}
 
@@ -2313,7 +2601,7 @@ function Section({ title, icon: Icon, children, action }) {
   );
 }
 
-function AreaView({ area, data, addTask, toggleTask, delTask, setStatus, onOpen, stuckDays }) {
+function AreaView({ area, data, addTask, toggleTask, delTask, setStatus, onOpen, stuckDays, iniciarTimer }) {
   const [adding, setAdding] = useState(false);
   const tasks = data.tasks.filter((t) => t.area === area);
   const Icon = AREAS[area].icon;
@@ -2324,13 +2612,13 @@ function AreaView({ area, data, addTask, toggleTask, delTask, setStatus, onOpen,
       }>
         {adding && <div className="mb-3"><TaskForm area={area} clients={data.clients} onAdd={addTask} onClose={() => setAdding(false)} /></div>}
         {tasks.length === 0 && !adding ? <p className="text-sm text-slate-400 py-2">Nenhuma demanda por aqui ainda.</p> :
-          <TaskGroups tasks={tasks} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={false} />}
+          <TaskGroups tasks={tasks} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={false} iniciarTimer={iniciarTimer} />}
       </Section>
     </div>
   );
 }
 
-function SocialMonthBlock({ m, isArchive, clientTasks, postHours, onUpdateMonth, onDeleteMonth, onAddPost, onUpdatePost, onDeletePost, onCopy, onPasteList }) {
+function SocialMonthBlock({ m, isArchive, clientTasks, postHours, clientId, timer, onIniciarCrono, onUpdateMonth, onDeleteMonth, onAddPost, onUpdatePost, onDeletePost, onCopy, onPasteList }) {
   const linked = clientTasks.find((t) => t.id === m.taskId);
   const posts = (m.posts || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   const postado = posts.filter((p) => p.status === "postado").length;
@@ -2376,6 +2664,7 @@ function SocialMonthBlock({ m, isArchive, clientTasks, postHours, onUpdateMonth,
               <th className="py-1 pr-2 font-medium">Descrição</th>
               <th className="py-1 pr-2 font-medium w-32">Status</th>
               <th className="py-1 pr-2 font-medium w-14">Restam</th>
+              <th className="py-1 pr-2 font-medium w-20">Tempo</th>
               <th className="py-1 pr-2 font-medium w-28">Resp. externo</th>
               <th className="py-1 w-5" />
             </tr>
@@ -2401,6 +2690,14 @@ function SocialMonthBlock({ m, isArchive, clientTasks, postHours, onUpdateMonth,
                 </td>
                 <td className="py-1 pr-2">
                   {(() => { const h = postRemainingHours(p, postHours); return h > 0 ? <span className="text-violet-700 font-semibold">{h}h</span> : <span className="text-slate-300">0h</span>; })()}
+                </td>
+                <td className="py-1 pr-2">
+                  <div className="flex items-center gap-1">
+                    {onIniciarCrono && !isArchive && (
+                      <BotaoCrono alvo={{ tipo: "post", clientId, monthId: m.id, postId: p.id, titulo: p.desc || "Post" }} timer={timer} onIniciar={onIniciarCrono} mini />
+                    )}
+                    {horasDe(p) > 0 && <span className="text-violet-700 font-semibold">{fmtHoras(horasDe(p))}</span>}
+                  </div>
                 </td>
                 <td className="py-1 pr-2">
                   <div className="flex flex-col gap-0.5">
@@ -2445,7 +2742,7 @@ function SocialMonthBlock({ m, isArchive, clientTasks, postHours, onUpdateMonth,
   );
 }
 
-function PostsView({ client, updateClient, clientTasks, postHours }) {
+function PostsView({ client, updateClient, clientTasks, postHours, timer, onIniciarCrono }) {
   const months = client.socialMonths || [];
   const [newMonthName, setNewMonthName] = useState("");
   const [showArchive, setShowArchive] = useState(false);
@@ -2504,7 +2801,7 @@ function PostsView({ client, updateClient, clientTasks, postHours }) {
       </div>
       {active.length === 0 && <p className="text-sm text-slate-400 mb-3">Nenhum mês ativo. Crie um acima.</p>}
       {active.map((m) => (
-        <SocialMonthBlock key={m.id} m={m} isArchive={false} clientTasks={clientTasks} postHours={postHours} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
+        <SocialMonthBlock key={m.id} m={m} isArchive={false} clientTasks={clientTasks} postHours={postHours} clientId={client.id} timer={timer} onIniciarCrono={onIniciarCrono} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
       ))}
       {archived.length > 0 && (
         <div className="mt-2">
@@ -2512,7 +2809,7 @@ function PostsView({ client, updateClient, clientTasks, postHours }) {
             {showArchive ? "Ocultar" : "Ver"} arquivo ({archived.length} {archived.length === 1 ? "mês" : "meses"})
           </button>
           {showArchive && archived.map((m) => (
-            <SocialMonthBlock key={m.id} m={m} isArchive={true} clientTasks={clientTasks} postHours={postHours} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
+            <SocialMonthBlock key={m.id} m={m} isArchive={true} clientTasks={clientTasks} postHours={postHours} clientId={client.id} timer={timer} onIniciarCrono={onIniciarCrono} onUpdateMonth={updateMonth} onDeleteMonth={deleteMonth} onAddPost={addPost} onUpdatePost={updatePost} onDeletePost={deletePost} onCopy={copyMonth} onPasteList={pasteList} />
           ))}
         </div>
       )}
@@ -2911,7 +3208,7 @@ function TextosPadraoView({ textos, reservas = [], clientes = [], onSave, onRese
   );
 }
 
-function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, onOpen, addReserva, editReserva, delReserva, setPricing, setTexto, resetTexto, gerarProcessoReserva, removerProcessoReserva, updateAcoClient, ensureAcoClient, addAcoCliente, editAcoCliente, delAcoCliente }) {
+function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, onOpen, iniciarTimer, addReserva, editReserva, delReserva, setPricing, setTexto, resetTexto, gerarProcessoReserva, removerProcessoReserva, updateAcoClient, ensureAcoClient, addAcoCliente, editAcoCliente, delAcoCliente }) {
   const [sub, setSub] = useState("reservas");
   const [addingR, setAddingR] = useState(false);
   const [addingT, setAddingT] = useState(false);
@@ -3004,14 +3301,14 @@ function AcoHubView({ data, addTask, toggleTask, delTask, setStatus, stuckDays, 
         }>
           {addingT && <div className="mb-3"><TaskForm area="acohub" clients={data.clients} onAdd={addTask} onClose={() => setAddingT(false)} /></div>}
           {tasks.length === 0 && !addingT ? <p className="text-sm text-slate-400 py-2">Nenhuma tarefa por aqui ainda.</p> :
-            <TaskGroups tasks={tasks} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={false} />}
+            <TaskGroups tasks={tasks} data={data} onToggle={toggleTask} onDelete={delTask} onStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} groupByScope={false} iniciarTimer={iniciarTimer} />}
         </Section>
       )}
 
       {sub === "social" && (
         <div>
           <ModeloSocialBox client={acoClient} addTask={addTask} updateClient={(id, patch) => updateAcoClient(patch)} />
-          <PostsView client={acoClient} updateClient={(id, patch) => updateAcoClient(patch)} clientTasks={tasks} postHours={mesclarHoras(data.postHours)} />
+          <PostsView client={acoClient} updateClient={(id, patch) => updateAcoClient(patch)} clientTasks={tasks} postHours={mesclarHoras(data.postHours)} timer={data.timer} onIniciarCrono={iniciarTimer} />
         </div>
       )}
     </div>
@@ -3089,7 +3386,7 @@ function ClientInfo({ client, updateClient }) {
 
 // Seção de demandas de um cliente, dividida em dois blocos:
 // "Em pauta" (o que já está na fila e conta no seu dia) e "Banco" (o que só está guardado).
-function ClienteDemandas({ client, tasks, data, addTask, editTask, toggleTask, delTask, setStatus, onOpen, stuckDays }) {
+function ClienteDemandas({ client, tasks, data, addTask, editTask, toggleTask, delTask, setStatus, onOpen, stuckDays, iniciarTimer }) {
   const [quick, setQuick] = useState("");
   const [destino, setDestino] = useState("banco");
   const [showForm, setShowForm] = useState(false);
@@ -3145,11 +3442,13 @@ function ClienteDemandas({ client, tasks, data, addTask, editTask, toggleTask, d
           {t.deadline
             ? <span className={t.deadline < TODAY ? "text-red-600 font-medium" : "text-slate-400"}>{t.deadline < TODAY ? "vencida " : "entrega "}{fmtBR(t.deadline)}</span>
             : <span className="text-amber-600">sem prazo</span>}
-          {(t.estTime || 0) > 0 ? <span className="text-slate-400">{t.estTime}h</span> : <span className="text-amber-600">sem tempo</span>}
+          {(t.estTime || 0) > 0 ? <span className="text-slate-400">est. {t.estTime}h</span> : <span className="text-amber-600">sem tempo</span>}
+          {horasReaisTask(t) > 0 && <span className="text-violet-700 font-semibold flex items-center gap-0.5"><Clock size={11} />real {fmtHoras(horasReaisTask(t))}</span>}
           {t.status === "espera" && <span className="text-slate-400">em espera</span>}
           {subProgress(t) && <span className="text-violet-500 flex items-center gap-0.5"><ListChecks size={11} />{subProgress(t)}</span>}
         </div>
       </div>
+      {iniciarTimer && <BotaoCrono alvo={{ tipo: "task", taskId: t.id, titulo: t.title }} timer={data.timer} onIniciar={iniciarTimer} />}
       <button onClick={() => onOpen(t.id)} title="Abrir e definir prazo e tempo" className="shrink-0 text-slate-300 hover:text-violet-600"><Pencil size={14} /></button>
       <button onClick={() => devolver(t.id)} title="Devolver para o banco (limpa o prazo)" className="shrink-0 text-slate-300 hover:text-violet-600"><Archive size={15} /></button>
       <button onClick={() => delTask(t.id)} className="shrink-0 text-slate-300 hover:text-red-500"><Trash2 size={15} /></button>
@@ -3235,8 +3534,77 @@ function ClienteDemandas({ client, tasks, data, addTask, editTask, toggleTask, d
   );
 }
 
+// Quanto tempo este cliente consumiu no mês, contra o que o contrato prevê.
+function HorasDoCliente({ client, data, updateClient }) {
+  const [editando, setEditando] = useState(false);
+  const [valor, setValor] = useState(client.horasContratadas || "");
+  const [offset, setOffset] = useState(0);
+
+  const base = fromKey(TODAY);
+  const ref = new Date(base.getFullYear(), base.getMonth() + offset, 1);
+  const ym = `${ref.getFullYear()}-${pad(ref.getMonth() + 1)}`;
+  const label = ref.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+
+  const gastas = horasDoClienteNoMes(data, client.id, ym);
+  const contratadas = Number(client.horasContratadas) || 0;
+  const pct = contratadas > 0 ? Math.min(100, Math.round((gastas / contratadas) * 100)) : 0;
+  const estourou = contratadas > 0 && gastas > contratadas;
+
+  const salvar = () => {
+    const n = valor === "" ? null : Number(valor) || 0;
+    updateClient(client.id, { horasContratadas: n });
+    setEditando(false);
+  };
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+          <Timer size={15} className="text-violet-500" /> Horas trabalhadas
+        </h3>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setOffset(offset - 1)} className="text-slate-400 hover:text-violet-600 px-1.5">‹</button>
+          <span className="text-xs text-slate-500 capitalize w-28 text-center">{label}</span>
+          <button onClick={() => setOffset(offset + 1)} disabled={offset >= 0} className={`px-1.5 ${offset >= 0 ? "text-slate-200" : "text-slate-400 hover:text-violet-600"}`}>›</button>
+        </div>
+      </div>
+
+      <div className="flex items-end gap-2 mb-1 flex-wrap">
+        <span className={`text-3xl font-bold ${estourou ? "text-red-600" : "text-violet-800"}`}>{fmtHoras(gastas)}</span>
+        {contratadas > 0 && <span className="text-sm text-slate-400 mb-1">de {fmtHoras(contratadas)} contratadas</span>}
+      </div>
+
+      {contratadas > 0 && (
+        <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden mb-2">
+          <div className={`h-full rounded-full ${estourou ? "bg-red-500" : pct > 80 ? "bg-amber-500" : "bg-violet-500"}`} style={{ width: `${pct}%` }} />
+        </div>
+      )}
+
+      {estourou && (
+        <p className="text-xs text-red-600 flex items-center gap-1 mb-2">
+          <AlertTriangle size={12} /> Passou {fmtHoras(gastas - contratadas)} do contratado neste mês.
+        </p>
+      )}
+
+      {editando ? (
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-500">Horas por mês no contrato:</span>
+          <input type="number" min="0" step="0.5" value={valor} onChange={(e) => setValor(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") salvar(); }} autoFocus
+            placeholder="em branco = sem contrato" className="w-32 border border-slate-300 rounded px-2 py-1 text-xs" />
+          <button onClick={salvar} className="bg-violet-600 text-white rounded px-2 py-1 text-xs">Salvar</button>
+        </div>
+      ) : (
+        <button onClick={() => { setValor(client.horasContratadas || ""); setEditando(true); }} className="text-xs text-violet-600 hover:text-violet-800">
+          {contratadas > 0 ? "Alterar horas do contrato" : "Cadastrar horas do contrato"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Página inteira de um cliente, com as seções Demandas, Posts e Informações.
-function ClientePage({ client, data, addTask, editTask, toggleTask, delTask, setStatus, updateClient, onOpen, stuckDays, onVoltar }) {
+function ClientePage({ client, data, addTask, editTask, toggleTask, delTask, setStatus, updateClient, onOpen, stuckDays, onVoltar, iniciarTimer, lancarHoras, apagarSessao }) {
   const [view, setView] = useState("demandas");
   const [editName, setEditName] = useState(null);
   const ct = data.tasks.filter((t) => t.clientId === client.id);
@@ -3272,6 +3640,8 @@ function ClientePage({ client, data, addTask, editTask, toggleTask, delTask, set
         )}
       </div>
 
+      <HorasDoCliente client={client} data={data} updateClient={updateClient} />
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-white rounded-2xl border border-slate-200 p-3">
           <p className="text-2xl font-bold text-violet-800">{pauta}</p>
@@ -3303,13 +3673,13 @@ function ClientePage({ client, data, addTask, editTask, toggleTask, delTask, set
       </div>
 
       {view === "demandas" && (
-        <ClienteDemandas client={client} tasks={ct} data={data} addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} />
+        <ClienteDemandas client={client} tasks={ct} data={data} addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus} onOpen={onOpen} stuckDays={stuckDays} iniciarTimer={iniciarTimer} />
       )}
 
       {view === "posts" && (
         <div className="bg-white rounded-xl border border-slate-200 p-4">
           <ModeloSocialBox client={client} addTask={addTask} updateClient={updateClient} />
-          <PostsView client={client} updateClient={updateClient} clientTasks={ct} postHours={postHours} />
+          <PostsView client={client} updateClient={updateClient} clientTasks={ct} postHours={postHours} timer={data.timer} onIniciarCrono={iniciarTimer} />
         </div>
       )}
 
@@ -3322,7 +3692,7 @@ function ClientePage({ client, data, addTask, editTask, toggleTask, delTask, set
   );
 }
 
-function Clientes({ data, addTask, editTask, toggleTask, delTask, setStatus, addClient, delClient, updateClient, onOpen, stuckDays, onCriarModeloSocial }) {
+function Clientes({ data, addTask, editTask, toggleTask, delTask, setStatus, addClient, delClient, updateClient, onOpen, stuckDays, onCriarModeloSocial, iniciarTimer, lancarHoras, apagarSessao }) {
   const [newClient, setNewClient] = useState("");
   const [aberto, setAberto] = useState(null);
   const [busca, setBusca] = useState("");
@@ -3347,6 +3717,7 @@ function Clientes({ data, addTask, editTask, toggleTask, delTask, setStatus, add
         client={clienteAberto} data={data}
         addTask={addTask} editTask={editTask} toggleTask={toggleTask} delTask={delTask} setStatus={setStatus}
         updateClient={updateClient} onOpen={onOpen} stuckDays={stuckDays}
+        iniciarTimer={iniciarTimer} lancarHoras={lancarHoras} apagarSessao={apagarSessao}
         onVoltar={() => setAberto(null)}
       />
     );
@@ -3619,6 +3990,51 @@ function Relatorio({ data, onRestore, uid }) {
           </Section>
         );
       })}
+
+      <Section title="Horas trabalhadas no mês" icon={Timer}>
+        {(() => {
+          const linhas = [...data.clients]
+            .filter((c) => !c.hidden)
+            .map((c) => ({ nome: c.name, horas: horasDoClienteNoMes(data, c.id, ym), contratadas: Number(c.horasContratadas) || 0 }))
+            .filter((l) => l.horas > 0 || l.contratadas > 0)
+            .sort((a, b) => b.horas - a.horas);
+          const semCliente = (() => {
+            let min = 0;
+            const noMes = (x) => (x.inicio || "").slice(0, 7) === ym;
+            for (const t of data.tasks || []) {
+              if (t.clientId) continue;
+              min += (t.sessions || []).filter(noMes).reduce((n, x) => n + (x.minutos || 0), 0);
+              for (const sb of t.subtasks || []) min += (sb.sessions || []).filter(noMes).reduce((n, x) => n + (x.minutos || 0), 0);
+            }
+            return Math.round((min / 60) * 100) / 100;
+          })();
+          const total = linhas.reduce((n, l) => n + l.horas, 0) + semCliente;
+          if (total === 0) return <p className="text-sm text-slate-400">Nenhuma hora registrada neste mês.</p>;
+          return (
+            <div>
+              {linhas.map((l) => {
+                const estourou = l.contratadas > 0 && l.horas > l.contratadas;
+                return (
+                  <div key={l.nome} className="flex items-center gap-3 py-1.5 text-sm border-b border-slate-100 last:border-0">
+                    <span className="flex-1">{l.nome}</span>
+                    {l.contratadas > 0 && <span className="text-xs text-slate-400">de {fmtHoras(l.contratadas)}</span>}
+                    <span className={`font-semibold w-20 text-right ${estourou ? "text-red-600" : "text-violet-800"}`}>{fmtHoras(l.horas)}</span>
+                  </div>
+                );
+              })}
+              {semCliente > 0 && (
+                <div className="flex items-center gap-3 py-1.5 text-sm border-b border-slate-100">
+                  <span className="flex-1 text-slate-500">Sem cliente (Acohub, pessoal, freelas)</span>
+                  <span className="font-semibold w-20 text-right text-slate-600">{fmtHoras(semCliente)}</span>
+                </div>
+              )}
+              <div className="flex justify-between mt-2 text-sm font-bold text-violet-800">
+                <span>Total do mês</span><span>{fmtHoras(total)}</span>
+              </div>
+            </div>
+          );
+        })()}
+      </Section>
 
       {reservasMes.length > 0 && (
         <Section title="Reservas do AcoHub" icon={Building2}>
