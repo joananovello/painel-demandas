@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail } from "firebase/auth";
 import { getFirestore, doc, collection, getDoc, getDocs, setDoc, deleteDoc, query, orderBy, limit } from "firebase/firestore";
@@ -686,6 +686,31 @@ function buildSchedule(tasks, meetings, workHours, clients = [], tabelas) {
   return { perUnitToday, perDayHours, meetingHours, units };
 }
 
+// Rede de segurança: se algo quebrar na tela, mostra o erro em vez de deixar tudo branco.
+class ParaQuedas extends React.Component {
+  constructor(p) { super(p); this.state = { erro: null, onde: "" }; }
+  static getDerivedStateFromError(erro) { return { erro }; }
+  componentDidCatch(erro, info) { this.setState({ onde: (info && info.componentStack) || "" }); }
+  render() {
+    if (!this.state.erro) return this.props.children;
+    const msg = `${this.state.erro.message || this.state.erro}\n\n${(this.state.erro.stack || "").split("\n").slice(0, 4).join("\n")}\n\nOnde:${this.state.onde.split("\n").slice(0, 6).join("\n")}`;
+    return (
+      <div className="min-h-screen bg-violet-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-xl border border-red-200 p-5 w-full max-w-lg">
+          <h1 className="text-lg font-bold text-red-700 mb-2 flex items-center gap-2"><AlertTriangle size={18} /> O painel encontrou um erro</h1>
+          <p className="text-sm text-slate-600 mb-3">Seus dados estão salvos. Copie a mensagem abaixo e mande para o Claude, que ele conserta.</p>
+          <pre className="text-xs bg-slate-50 border border-slate-200 rounded-lg p-2 overflow-auto max-h-56 whitespace-pre-wrap">{msg}</pre>
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => { try { navigator.clipboard.writeText(msg); } catch (_) {} }} className="flex-1 bg-violet-600 text-white rounded-lg py-2 text-sm font-medium">Copiar erro</button>
+            <button onClick={() => window.location.reload()} className="px-4 bg-white border border-slate-300 rounded-lg py-2 text-sm">Recarregar</button>
+          </div>
+          <p className="text-xs text-slate-400 mt-2">Versão v53</p>
+        </div>
+      </div>
+    );
+  }
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
@@ -697,8 +722,8 @@ export default function App() {
   }, []);
 
   if (!authReady) return <div className="min-h-screen flex items-center justify-center text-violet-600">Carregando...</div>;
-  if (!session) return <Login />;
-  return <Painel session={session} />;
+  if (!session) return <ParaQuedas><Login /></ParaQuedas>;
+  return <ParaQuedas><Painel session={session} /></ParaQuedas>;
 }
 
 function Login() {
@@ -914,6 +939,14 @@ function Painel({ session }) {
     }, 800);
   }, [data]);
 
+  // Os refs do histórico precisam existir antes de desfazerPerda, que mexe em skipHistory.
+  const historyRef = useRef([]);
+  const futureRef = useRef([]);
+  const prevDataRef = useRef(null);
+  const skipHistory = useRef(false);
+  const lastPush = useRef(0);
+  const [histTick, setHistTick] = useState(0);
+
   const confirmarPerda = () => { const a = alertaPerda; setAlertaPerda(null); if (a) gravar(a.payload); };
   const desfazerPerda = () => {
     const bruto = ultimoBom.current;
@@ -930,12 +963,6 @@ function Painel({ session }) {
   const logout = () => signOut(auth);
 
   // ---- Histórico (desfazer / refazer) ----
-  const historyRef = useRef([]);
-  const futureRef = useRef([]);
-  const prevDataRef = useRef(null);
-  const skipHistory = useRef(false);
-  const lastPush = useRef(0);
-  const [histTick, setHistTick] = useState(0);
 
   useEffect(() => {
     if (!loaded.current) { prevDataRef.current = data; return; }
@@ -996,11 +1023,6 @@ function Painel({ session }) {
 
   const podeDesfazer = historyRef.current.length > 0;
   const podeRefazer = futureRef.current.length > 0;
-
-  // Chave geral do cronômetro. Desligada, o play some de todos os lugares,
-  // mas o tempo já registrado continua guardado.
-  const cronoLigado = data.settings.cronoOn !== false;
-  const cronoFn = cronoLigado ? iniciarTimer : null;
 
   const sched = useMemo(() => buildSchedule(data.tasks, data.meetings, data.settings.workHours, data.clients, mesclarHoras(data.postHours)), [data]);
 
@@ -1101,6 +1123,12 @@ function Painel({ session }) {
       return { ...t, sessions: tira(t.sessions) };
     })};
   });
+
+  // Chave geral do cronômetro. Desligada, o play some de todos os lugares,
+  // mas o tempo já registrado continua guardado.
+  // Precisa vir depois de iniciarTimer: usar um const antes da linha dele quebra a tela.
+  const cronoLigado = data.settings.cronoOn !== false;
+  const cronoFn = cronoLigado ? iniciarTimer : null;
   const setSetting = (k, v) => setData((d) => ({ ...d, settings: { ...d.settings, [k]: v } }));
   const togglePriority = (id) => setData((d) => {
     const cur = d.priorities || [];
@@ -1236,7 +1264,7 @@ function Painel({ session }) {
           <div className="mt-auto flex flex-col items-center gap-1">
             <button onClick={() => setShowSettings(true)} title="Configurações" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><Settings size={20} /></button>
             <button onClick={logout} title="Sair" className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-400 hover:bg-violet-50 hover:text-violet-600"><LogOut size={20} /></button>
-            <span className="text-[9px] text-slate-300 mt-1">v51</span>
+            <span className="text-[9px] text-slate-300 mt-1">v53</span>
           </div>
         </aside>
 
